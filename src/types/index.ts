@@ -1,48 +1,26 @@
-export type Conviction = 'low' | 'medium' | 'high'
-export type Status = 'watching' | 'in_position' | 'exited'
-export type ArcPublishStatus = 'pending' | 'published' | 'failed'
+/**
+ * Frontend type barrel.
+ * All types come from the backend — no duplication.
+ * Import from here in UI components.
+ */
 
-export interface ReasoningStep {
-  step: number
-  role: 'researcher' | 'risk_manager' | 'portfolio_manager'
-  content: string
-  timestamp: string
-}
-
-export interface Evidence {
-  label: string
-  source: string
-  detail: string
-  weight: 'supporting' | 'neutral' | 'contradicting'
-}
-
-export interface StatusEvent {
-  status: Status
-  timestamp: string
-  note: string
-}
-
-export interface Trace {
-  id: string
-  asset: string
-  market: string
-  edge: string
-  conviction: Conviction
-  status: Status
-  thesis: string
-  conclusion: string
-  edgeNarrative: string
-  reasoningSteps: ReasoningStep[]
-  evidence: Evidence[]
-  risks: string[]
-  catalysts: string[]
-  positionIntent: string
-  invalidationCriteria: string[]
-  statusTimeline: StatusEvent[]
-  arcPublishStatus: ArcPublishStatus
-  traceHash: string
-  arcTxHash: string | null
-  publishedAt: string | null
-  updatedAt: string
-  createdAt: string
-}
+export type { Agent, AgentStatus, AgentModel, CreateAgentInput } from '@/backend/shared/types/agent'
+export type {
+  ReasoningTrace,
+  ReasoningStep,
+  PositionIntent,
+  PositionSide,
+  ConfidenceLevel,
+  TimeHorizon,
+  TraceStatus,
+  PublishedTracePayload,
+} from '@/backend/shared/types/trace'
+export type { Position, Follow } from '@/backend/shared/types/position'
+export type {
+  ApiErrorResponse,
+  RunAgentRequest,
+  RunAgentResponse,
+  ListAgentsResponse,
+  ListTracesResponse,
+  GetTraceResponse,
+} from '@/backend/shared/types/api'
