@@ -1,43 +1,24 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
-import {
-  formatRelative,
-  confidenceLabel,
-  deriveEdge,
-  deriveBadgeStatus,
-  sideLabel,
-  sideColor,
-} from '@/lib/trace-utils'
+import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
 import type { ConfidenceLevel } from '@/backend/shared/types/trace'
 
-// ─── Badges ──────────────────────────────────────────────────────────────────
+// ─── Micro-badges ─────────────────────────────────────────────────────────────
 
 function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
   return <span className={`conviction conviction-${level}`}>{confidenceLabel(level)}</span>
 }
 
-function TraceBadge({ trace }: { trace: ReasoningTrace }) {
-  const badge = deriveBadgeStatus(trace)
-  const map = {
-    active:   { cls: 'status-in_position', label: 'In Position' },
-    watching: { cls: 'status-watching',    label: 'Watching'    },
-    neutral:  { cls: 'status-watching',    label: 'Neutral'     },
-    exited:   { cls: 'status-exited',      label: 'Exited'      },
-  }
-  const { cls, label } = map[badge]
-  return <span className={`status-badge ${cls}`}>{label}</span>
-}
-
-function SideBadge({ side }: { side: ReasoningTrace['positionIntent']['side'] }) {
+function SideBadge({ trace }: { trace: ReasoningTrace }) {
+  const side = trace.positionIntent.side
   return (
     <span style={{
       fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
-      textTransform: 'uppercase' as const,
-      color: sideColor(side),
+      textTransform: 'uppercase' as const, color: sideColor(side),
       background: side === 'long' ? 'var(--lime-dim)' : side === 'short' ? 'var(--ember-dim)' : 'rgba(255,255,255,0.03)',
       border: `1px solid ${side === 'long' ? 'var(--lime-border)' : side === 'short' ? 'rgba(255,107,53,0.2)' : 'var(--border)'}`,
       padding: '3px 9px', borderRadius: 3,
@@ -45,9 +26,11 @@ function SideBadge({ side }: { side: ReasoningTrace['positionIntent']['side'] })
   )
 }
 
-// ─── Run Modal ────────────────────────────────────────────────────────────────
+// ─── Run Analysis Modal ───────────────────────────────────────────────────────
 
-function RunModal({ agents, onClose, onSuccess }: {
+function RunModal({
+  agents, onClose, onSuccess,
+}: {
   agents: Agent[]
   onClose: () => void
   onSuccess: (trace: ReasoningTrace) => void
@@ -59,25 +42,51 @@ function RunModal({ agents, onClose, onSuccess }: {
   const [headlines, setHeadlines] = useState('')
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState<string | null>(null)
+  const [phase, setPhase]         = useState<'idle' | 'calling' | 'reasoning' | 'storing'>('idle')
 
-  async function handleSubmit() {
-    if (!market.trim() || !asset.trim()) { setError('Market and asset symbol are required.'); return }
-    setError(null); setLoading(true)
+  async function handleRun() {
+    if (!market.trim() || !asset.trim()) {
+      setError('Market question and asset symbol are required.')
+      return
+    }
+    setError(null)
+    setLoading(true)
+    setPhase('calling')
+
+    // Simulate visible reasoning phases for UX
+    const phaseTimer1 = setTimeout(() => setPhase('reasoning'), 1200)
+    const phaseTimer2 = setTimeout(() => setPhase('storing'), 4500)
+
     try {
       const result = await runAgent(agentId, {
         market: market.trim(),
         assetSymbol: asset.trim().toUpperCase(),
         context: {
           price: price ? parseFloat(price) : undefined,
-          headlines: headlines ? headlines.split('\n').map(h => h.trim()).filter(Boolean) : undefined,
+          headlines: headlines
+            ? headlines.split('\n').map(h => h.trim()).filter(Boolean)
+            : undefined,
         },
       })
+      clearTimeout(phaseTimer1)
+      clearTimeout(phaseTimer2)
       onSuccess(result.trace)
     } catch (err) {
-      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Unexpected error.')
+      clearTimeout(phaseTimer1)
+      clearTimeout(phaseTimer2)
+      setPhase('idle')
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Unexpected error. Check the console.')
+      console.error(err)
     } finally {
       setLoading(false)
     }
+  }
+
+  const phaseLabels: Record<typeof phase, string> = {
+    idle:      'Run analysis →',
+    calling:   '◌ Initialising agent…',
+    reasoning: '◌ Agent is reasoning…',
+    storing:   '◌ Storing trace…',
   }
 
   const iStyle: React.CSSProperties = {
@@ -85,6 +94,7 @@ function RunModal({ agents, onClose, onSuccess }: {
     border: '1px solid var(--border)', borderRadius: 'var(--radius)',
     padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 12,
     color: 'var(--text-primary)', outline: 'none', letterSpacing: '0.02em',
+    transition: 'border-color 0.15s',
   }
   const lStyle: React.CSSProperties = {
     fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
@@ -93,73 +103,127 @@ function RunModal({ agents, onClose, onSuccess }: {
   }
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 200,
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
-      background: 'rgba(5,5,7,0.88)', backdropFilter: 'blur(8px)',
-    }}>
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        background: 'rgba(5,5,7,0.9)', backdropFilter: 'blur(10px)',
+      }}
+      onClick={e => e.target === e.currentTarget && !loading && onClose()}
+    >
       <div style={{
         background: 'var(--bg-card)', border: '1px solid var(--border-hover)',
         borderRadius: 'var(--radius-lg)', padding: '32px 28px',
-        width: '100%', maxWidth: 480,
+        width: '100%', maxWidth: 500,
       }}>
         <div style={{ marginBottom: 24 }}>
-          <div className="mono-label" style={{ marginBottom: 8 }}>Run analysis</div>
+          <div className="mono-label" style={{ marginBottom: 8 }}>New analysis</div>
           <h2 style={{
             fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-primary)',
-          }}>New trace</h2>
+          }}>Run trace</h2>
         </div>
 
+        {/* Reasoning phase indicator */}
+        {loading && (
+          <div style={{
+            background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
+            borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: 20,
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{
+              display: 'inline-block', animation: 'spin 1.2s linear infinite',
+              fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--violet)',
+            }}>◌</span>
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)', letterSpacing: '0.06em' }}>
+                {phaseLabels[phase]}
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {phase === 'reasoning' && 'DeepSeek-R1 generating reasoning trace…'}
+                {phase === 'storing'   && 'Persisting to Arc testnet…'}
+                {phase === 'calling'   && 'Connecting to Groq pipeline…'}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Agent */}
           <div>
             <label style={lStyle}>Agent</label>
-            <select value={agentId} onChange={e => setAgentId(e.target.value)} disabled={loading} style={{ ...iStyle, cursor: 'pointer' }}>
-              {agents.map(a => <option key={a.id} value={a.id}>{a.name} — {a.model}</option>)}
+            <select value={agentId} onChange={e => setAgentId(e.target.value)} disabled={loading}
+              style={{ ...iStyle, cursor: 'pointer' }}>
+              {agents.map(a => (
+                <option key={a.id} value={a.id}>{a.name} — {a.model} ({a.status})</option>
+              ))}
             </select>
           </div>
 
+          {/* Market */}
           <div>
             <label style={lStyle}>Market question</label>
-            <input type="text" value={market} onChange={e => setMarket(e.target.value)} disabled={loading}
-              placeholder="Will BTC reach $120k before June 30, 2026?" style={iStyle} />
+            <input type="text" value={market} onChange={e => setMarket(e.target.value)}
+              disabled={loading} placeholder="Will BTC exceed $120k before June 30, 2026?"
+              style={iStyle} />
           </div>
 
+          {/* Asset + price */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <label style={lStyle}>Asset symbol</label>
-              <input type="text" value={asset} onChange={e => setAsset(e.target.value)} disabled={loading} placeholder="BTC" style={iStyle} />
+              <input type="text" value={asset} onChange={e => setAsset(e.target.value)}
+                disabled={loading} placeholder="BTC" style={iStyle} />
             </div>
             <div>
-              <label style={lStyle}>Price (optional)</label>
-              <input type="number" value={price} onChange={e => setPrice(e.target.value)} disabled={loading} placeholder="108400" style={iStyle} />
+              <label style={lStyle}>Current price (optional)</label>
+              <input type="number" value={price} onChange={e => setPrice(e.target.value)}
+                disabled={loading} placeholder="108400" style={iStyle} />
             </div>
           </div>
 
+          {/* Headlines */}
           <div>
-            <label style={lStyle}>Headlines (optional, one per line)</label>
-            <textarea value={headlines} onChange={e => setHeadlines(e.target.value)} disabled={loading} rows={3}
-              placeholder={"ETF inflows hit $1.1B third week running\nFed holds rates"} style={{ ...iStyle, resize: 'vertical', lineHeight: 1.6 }} />
+            <label style={lStyle}>Context headlines (optional, one per line)</label>
+            <textarea value={headlines} onChange={e => setHeadlines(e.target.value)}
+              disabled={loading} rows={3} style={{ ...iStyle, resize: 'vertical', lineHeight: 1.7 }}
+              placeholder={"ETF inflows $1.1B third consecutive week\nFed holds rates at May FOMC"} />
           </div>
 
+          {/* Error */}
           {error && (
             <div style={{
               fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember)',
-              background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.2)',
+              background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.22)',
               borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
             }}>{error}</div>
           )}
 
+          {/* Actions */}
           <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-            <button onClick={handleSubmit} disabled={loading} className="btn-primary"
-              style={{ flex: 1, justifyContent: 'center', opacity: loading ? 0.6 : 1, cursor: loading ? 'not-allowed' : 'pointer' }}>
-              {loading ? '◌ Running agent…' : 'Run analysis →'}
+            <button
+              onClick={handleRun}
+              disabled={loading}
+              className="btn-primary"
+              style={{
+                flex: 1, justifyContent: 'center',
+                opacity: loading ? 0.7 : 1,
+                cursor: loading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {phaseLabels[phase]}
             </button>
-            <button onClick={onClose} disabled={loading} className="btn-ghost">Cancel</button>
+            <button onClick={onClose} disabled={loading} className="btn-ghost">
+              Cancel
+            </button>
           </div>
         </div>
       </div>
-      <style>{`select option { background: #0a0a12; color: #f0eff8; }`}</style>
+
+      <style>{`
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        select option { background: #0a0a12; color: #f0eff8; }
+      `}</style>
     </div>
   )
 }
@@ -168,30 +232,51 @@ function RunModal({ agents, onClose, onSuccess }: {
 
 function Skeleton() {
   return (
-    <div className="card" style={{ padding: '18px 20px' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {[80, 55, 90].map((w, i) => (
-          <div key={i} style={{
-            height: i === 0 ? 14 : 11, width: `${w}%`,
-            background: 'var(--border)', borderRadius: 4,
-            animation: 'shimmer 1.5s ease-in-out infinite',
-          }} />
-        ))}
-      </div>
-      <style>{`@keyframes shimmer { 0%,100%{opacity:.3} 50%{opacity:.7} }`}</style>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {[1, 2, 3].map(i => (
+        <div key={i} className="card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[75, 50].map((w, j) => (
+                <div key={j} style={{
+                  height: j === 0 ? 14 : 11, width: `${w}%`,
+                  background: 'var(--border)', borderRadius: 3,
+                  animation: 'shimmer 1.5s ease-in-out infinite',
+                }} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {[60, 80].map((w, j) => (
+                <div key={j} style={{
+                  height: 22, width: w, background: 'var(--border)',
+                  borderRadius: 3, animation: 'shimmer 1.5s ease-in-out infinite',
+                }} />
+              ))}
+            </div>
+          </div>
+        </div>
+      ))}
+      <style>{`@keyframes shimmer{0%,100%{opacity:.3}50%{opacity:.7}}`}</style>
     </div>
   )
 }
 
-// ─── Toast ───────────────────────────────────────────────────────────────────
+// ─── Toast ────────────────────────────────────────────────────────────────────
 
 function Toast({ trace, onDismiss }: { trace: ReasoningTrace; onDismiss: () => void }) {
+  // Auto-dismiss after 8s
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 8000)
+    return () => clearTimeout(t)
+  }, [onDismiss])
+
   return (
     <div style={{
       position: 'fixed', bottom: 24, right: 24, zIndex: 300,
       background: 'var(--bg-card)', border: '1px solid var(--lime-border)',
-      borderRadius: 'var(--radius-lg)', padding: '16px 20px', maxWidth: 340,
-      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      borderRadius: 'var(--radius-lg)', padding: '16px 20px',
+      maxWidth: 340, boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
+      animation: 'slideUp 0.3s ease-out',
     }}>
       <div style={{
         fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
@@ -200,32 +285,134 @@ function Toast({ trace, onDismiss }: { trace: ReasoningTrace; onDismiss: () => v
       }}>
         <span className="live-dot" /> Trace generated
       </div>
-      <p style={{ fontSize: 13, color: 'var(--text-primary)', marginBottom: 12, lineHeight: 1.4,
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {trace.market}
-      </p>
+      <p style={{
+        fontSize: 13, color: 'var(--text-primary)', marginBottom: 12,
+        lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>{trace.market}</p>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Link href={`/trace/${trace.id}`} className="btn-trace" style={{ flex: 1, justifyContent: 'center' }}>
+        <Link href={`/traces/${trace.id}`} className="btn-trace"
+          style={{ flex: 1, justifyContent: 'center' }}>
           View trace →
         </Link>
         <button onClick={onDismiss} className="btn-ghost" style={{ padding: '6px 12px' }}>✕</button>
       </div>
+      <style>{`@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}`}</style>
     </div>
+  )
+}
+
+// ─── Trace row ────────────────────────────────────────────────────────────────
+
+function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
+  const side = trace.positionIntent.side
+  const borderColor = side === 'long' ? 'var(--lime)' : side === 'short' ? 'var(--ember)' : 'transparent'
+
+  return (
+    <Link href={`/traces/${trace.id}`}>
+      <div
+        className="card"
+        style={{
+          padding: '18px 20px', cursor: 'pointer',
+          borderLeft: `2px solid ${borderColor}`,
+          animation: isNew ? 'fadeIn 0.4s ease-out' : 'none',
+        }}
+      >
+        {/* Desktop grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
+          gap: 12, alignItems: 'center',
+        }} className="hide-mobile">
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.08em',
+            color: 'var(--violet)', background: 'var(--violet-dim)',
+            border: '1px solid var(--violet-border)', padding: '3px 8px', borderRadius: 3,
+          }}>{trace.assetSymbol}</span>
+
+          <div style={{ minWidth: 0 }}>
+            <div style={{
+              fontSize: 13, fontWeight: 500, color: 'var(--text-primary)',
+              marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', letterSpacing: '-0.01em',
+            }}>{trace.market}</div>
+            <div style={{
+              fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic',
+              fontFamily: 'var(--font-editorial)', overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 300,
+            }}>{deriveEdge(trace)}</div>
+          </div>
+
+          <ConfidenceBadge level={trace.confidence} />
+          <SideBadge trace={trace} />
+
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            letterSpacing: '0.06em', textTransform: 'uppercase',
+            color: trace.status === 'pinned' ? 'var(--lime)' : 'var(--text-tertiary)',
+          }}>
+            {trace.status === 'pinned' ? '✓ On Arc' : trace.status}
+          </span>
+
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            color: 'var(--text-tertiary)', letterSpacing: '0.04em',
+          }}>{formatRelative(trace.createdAt)}</span>
+
+          <span className="btn-trace">Open →</span>
+        </div>
+
+        {/* Mobile card */}
+        <div style={{ display: 'none' }} className="show-mobile-block">
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'flex-start', marginBottom: 8, gap: 8,
+          }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)',
+                background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
+                padding: '2px 7px', borderRadius: 3,
+              }}>{trace.assetSymbol}</span>
+              <ConfidenceBadge level={trace.confidence} />
+              <SideBadge trace={trace} />
+            </div>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10,
+              color: 'var(--text-tertiary)', flexShrink: 0,
+            }}>{formatRelative(trace.createdAt)}</span>
+          </div>
+          <div style={{
+            fontSize: 13, fontWeight: 500, color: 'var(--text-primary)',
+            marginBottom: 4, lineHeight: 1.4,
+          }}>{trace.market}</div>
+          <div style={{
+            fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic',
+            fontFamily: 'var(--font-editorial)', lineHeight: 1.5,
+            marginBottom: 10, fontWeight: 300,
+          }}>{deriveEdge(trace)}</div>
+          <span className="btn-trace">Open trace →</span>
+        </div>
+      </div>
+    </Link>
   )
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
+type Filter = 'all' | 'long' | 'short' | 'neutral'
+
 export default function DashboardPage() {
   const [agents, setAgents]             = useState<Agent[]>([])
   const [traces, setTraces]             = useState<ReasoningTrace[]>([])
+  const [newTraceIds, setNewTraceIds]   = useState<Set<string>>(new Set())
   const [loadingAgents, setLoadingAgents] = useState(true)
   const [loadingTraces, setLoadingTraces] = useState(true)
   const [agentsError, setAgentsError]   = useState<string | null>(null)
   const [tracesError, setTracesError]   = useState<string | null>(null)
   const [showModal, setShowModal]       = useState(false)
-  const [newTrace, setNewTrace]         = useState<ReasoningTrace | null>(null)
-  const [filter, setFilter]             = useState<'all' | 'active' | 'watching' | 'exited'>('all')
+  const [toast, setToast]               = useState<ReasoningTrace | null>(null)
+  const [filter, setFilter]             = useState<Filter>('all')
+  const refreshRef                      = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchAgents = useCallback(async () => {
     setLoadingAgents(true); setAgentsError(null)
@@ -234,44 +421,62 @@ export default function DashboardPage() {
     finally { setLoadingAgents(false) }
   }, [])
 
-  const fetchTraces = useCallback(async () => {
-    setLoadingTraces(true); setTracesError(null)
-    try { const { traces: d } = await listTraces({ limit: 50 }); setTraces(d) }
-    catch (e) { setTracesError(e instanceof ApiError ? e.message : 'Failed to load traces.') }
-    finally { setLoadingTraces(false) }
+  const fetchTraces = useCallback(async (silent = false) => {
+    if (!silent) setLoadingTraces(true)
+    setTracesError(null)
+    try {
+      const { traces: data } = await listTraces({ limit: 50 })
+      setTraces(data)
+    } catch (e) {
+      setTracesError(e instanceof ApiError ? e.message : 'Failed to load traces.')
+    } finally {
+      if (!silent) setLoadingTraces(false)
+    }
   }, [])
 
-  useEffect(() => { fetchAgents(); fetchTraces() }, [fetchAgents, fetchTraces])
+  useEffect(() => {
+    fetchAgents()
+    fetchTraces()
+    // Silent background refresh every 30s
+    refreshRef.current = setInterval(() => fetchTraces(true), 30000)
+    return () => { if (refreshRef.current) clearInterval(refreshRef.current) }
+  }, [fetchAgents, fetchTraces])
 
   function handleRunSuccess(trace: ReasoningTrace) {
     setShowModal(false)
-    setNewTrace(trace)
+    setToast(trace)
     setTraces(prev => [trace, ...prev])
+    setNewTraceIds(prev => new Set([...prev, trace.id]))
+    // Clear "new" highlight after 5s
+    setTimeout(() => {
+      setNewTraceIds(prev => { const s = new Set(prev); s.delete(trace.id); return s })
+    }, 5000)
   }
 
   const filtered = traces.filter(t => {
     if (filter === 'all') return true
-    const b = deriveBadgeStatus(t)
-    if (filter === 'active') return b === 'active'
-    if (filter === 'watching') return b === 'watching' || b === 'neutral'
-    if (filter === 'exited') return b === 'exited'
-    return true
+    return t.positionIntent.side === filter
   })
 
-  const inPosition = traces.filter(t => deriveBadgeStatus(t) === 'active').length
-  const watching   = traces.filter(t => ['watching','neutral'].includes(deriveBadgeStatus(t))).length
+  const long    = traces.filter(t => t.positionIntent.side === 'long').length
+  const short   = traces.filter(t => t.positionIntent.side === 'short').length
+  const neutral = traces.filter(t => t.positionIntent.side === 'neutral').length
+  const onArc   = traces.filter(t => t.status === 'pinned').length
 
   return (
     <>
       <main style={{ padding: '48px 32px 100px', maxWidth: 1200, margin: '0 auto' }}>
 
-        {/* Header */}
+        {/* Page header */}
         <div style={{
-          display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'flex-start',
-          gap: 24, marginBottom: 48, paddingBottom: 40, borderBottom: '1px solid var(--border)',
+          display: 'grid', gridTemplateColumns: '1fr auto',
+          alignItems: 'flex-start', gap: 24, marginBottom: 48,
+          paddingBottom: 40, borderBottom: '1px solid var(--border)',
         }}>
           <div>
-            <div className="mono-label" style={{ marginBottom: 14 }}>Market intelligence — Arc testnet</div>
+            <div className="mono-label" style={{ marginBottom: 14 }}>
+              Prediction market intelligence · Arc testnet
+            </div>
             <h1 style={{
               fontFamily: 'var(--font-display)', fontSize: 'clamp(32px,5vw,52px)',
               fontWeight: 700, textTransform: 'uppercase', letterSpacing: '-0.01em',
@@ -282,26 +487,40 @@ export default function DashboardPage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-end' }}>
-            <button onClick={() => setShowModal(true)} disabled={loadingAgents || agents.length === 0}
+            {/* Run Analysis button */}
+            <button
+              onClick={() => setShowModal(true)}
+              disabled={loadingAgents || agents.length === 0}
               className="btn-primary"
-              style={{ opacity: loadingAgents || agents.length === 0 ? 0.5 : 1,
-                cursor: loadingAgents || agents.length === 0 ? 'not-allowed' : 'pointer' }}>
-              {loadingAgents ? '◌ Loading…' : '+ Run analysis'}
+              style={{
+                opacity: loadingAgents ? 0.5 : 1,
+                cursor: loadingAgents || agents.length === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {loadingAgents
+                ? <><span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>◌</span> Loading…</>
+                : '+ Run analysis'
+              }
             </button>
 
+            {/* Stats strip */}
             <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 1,
+              display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 1,
               background: 'var(--border)', border: '1px solid var(--border)',
               borderRadius: 'var(--radius-lg)', overflow: 'hidden',
             }}>
               {[
-                { label: 'Total',       val: loadingTraces ? '—' : String(traces.length),   color: 'var(--text-primary)' },
-                { label: 'In position', val: loadingTraces ? '—' : String(inPosition),      color: 'var(--lime)' },
-                { label: 'Watching',    val: loadingTraces ? '—' : String(watching),         color: 'var(--ice)' },
+                { label: 'Long',    val: long,    color: 'var(--lime)'          },
+                { label: 'Short',   val: short,   color: 'var(--ember)'         },
+                { label: 'Neutral', val: neutral, color: 'var(--text-secondary)'},
+                { label: 'On Arc',  val: onArc,   color: 'var(--violet)'        },
               ].map(s => (
                 <div key={s.label} style={{ background: 'var(--bg-card)', padding: '12px 16px', textAlign: 'center' }}>
                   <div className="mono-label" style={{ marginBottom: 4 }}>{s.label}</div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.val}</div>
+                  <div style={{
+                    fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700,
+                    color: s.color, lineHeight: 1,
+                  }}>{loadingTraces ? '—' : s.val}</div>
                 </div>
               ))}
             </div>
@@ -312,43 +531,46 @@ export default function DashboardPage() {
         {agentsError && (
           <div style={{
             border: '1px solid rgba(255,107,53,0.25)', background: 'rgba(255,107,53,0.04)',
-            borderRadius: 'var(--radius-lg)', padding: '16px 20px', marginBottom: 20,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+            borderRadius: 'var(--radius-lg)', padding: '14px 18px', marginBottom: 20,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
           }}>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 300 }}>{agentsError}</p>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 300 }}>
+              Agent load error: {agentsError}
+            </p>
             <button onClick={fetchAgents} className="btn-ghost">Retry</button>
           </div>
         )}
 
-        {/* Filters */}
+        {/* Filter + count row */}
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          marginBottom: 16, flexWrap: 'wrap', gap: 12,
+          display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between', marginBottom: 16,
+          flexWrap: 'wrap', gap: 12,
         }}>
           <div className="mono-label">
-            {loadingTraces ? 'Loading…' : `${filtered.length} trace${filtered.length !== 1 ? 's' : ''}`}
+            {loadingTraces ? 'Loading traces…' : `${filtered.length} trace${filtered.length !== 1 ? 's' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
-            {(['all','active','watching','exited'] as const).map(f => (
+            {(['all','long','short','neutral'] as Filter[]).map(f => (
               <button key={f} onClick={() => setFilter(f)} style={{
                 fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
                 textTransform: 'uppercase', padding: '5px 12px', borderRadius: 3,
                 border: '1px solid var(--border)',
                 background: filter === f ? 'var(--violet-dim)' : 'transparent',
                 color: filter === f ? 'var(--violet)' : 'var(--text-tertiary)',
-                cursor: 'pointer',
+                cursor: 'pointer', transition: 'all 0.15s',
               }}>{f}</button>
             ))}
           </div>
         </div>
 
-        {/* Column headers */}
+        {/* Column headers — desktop */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
           gap: 12, padding: '6px 20px', marginBottom: 6,
         }} className="hide-mobile">
-          {['Asset','Market / Edge','Confidence','Side','Status','Age',''].map(h => (
+          {['Asset','Market / Edge','Confidence','Side','Arc status','Age',''].map(h => (
             <div key={h} className="mono-label">{h}</div>
           ))}
         </div>
@@ -358,21 +580,17 @@ export default function DashboardPage() {
           <div style={{
             border: '1px solid rgba(255,107,53,0.25)', background: 'rgba(255,107,53,0.04)',
             borderRadius: 'var(--radius-lg)', padding: '16px 20px',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
           }}>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 300 }}>{tracesError}</p>
-            <button onClick={fetchTraces} className="btn-ghost">Retry</button>
+            <button onClick={() => fetchTraces()} className="btn-ghost">Retry</button>
           </div>
         )}
 
-        {/* Skeletons */}
-        {loadingTraces && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {[1,2,3].map(i => <Skeleton key={i} />)}
-          </div>
-        )}
+        {/* Loading skeletons */}
+        {loadingTraces && <Skeleton />}
 
-        {/* Empty */}
+        {/* Empty state */}
         {!loadingTraces && !tracesError && filtered.length === 0 && (
           <div style={{
             border: '1px dashed var(--border)', borderRadius: 'var(--radius-lg)',
@@ -383,91 +601,32 @@ export default function DashboardPage() {
               textTransform: 'uppercase', letterSpacing: '0.06em',
               color: 'var(--text-tertiary)', marginBottom: 8,
             }}>No traces yet</div>
-            <p style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 24, fontWeight: 300 }}>
-              Run an analysis to generate your first reasoning trace.
+            <p style={{
+              fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 24, fontWeight: 300,
+            }}>
+              {filter !== 'all'
+                ? `No ${filter} positions found. Try a different filter.`
+                : 'Run an analysis to generate your first reasoning trace.'
+              }
             </p>
-            <button onClick={() => setShowModal(true)} disabled={agents.length === 0} className="btn-primary">
-              + Run analysis
-            </button>
+            {filter === 'all' && agents.length > 0 && (
+              <button onClick={() => setShowModal(true)} className="btn-primary">
+                + Run analysis
+              </button>
+            )}
           </div>
         )}
 
         {/* Trace list */}
         {!loadingTraces && !tracesError && filtered.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {filtered.map(trace => {
-              const badge = deriveBadgeStatus(trace)
-              const borderColor = badge === 'active' ? 'var(--lime)' : badge === 'watching' ? 'var(--ice)' : 'transparent'
-
-              return (
-                <Link key={trace.id} href={`/trace/${trace.id}`}>
-                  <div className="card" style={{ padding: '18px 20px', cursor: 'pointer', borderLeft: `2px solid ${borderColor}` }}>
-
-                    {/* Desktop row */}
-                    <div style={{
-                      display: 'grid',
-                      gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
-                      gap: 12, alignItems: 'center',
-                    }} className="hide-mobile">
-                      <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.08em',
-                        color: 'var(--violet)', background: 'var(--violet-dim)',
-                        border: '1px solid var(--violet-border)', padding: '3px 8px', borderRadius: 3,
-                      }}>{trace.assetSymbol}</span>
-
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{
-                          fontSize: 13, fontWeight: 500, color: 'var(--text-primary)',
-                          marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap', letterSpacing: '-0.01em',
-                        }}>{trace.market}</div>
-                        <div style={{
-                          fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic',
-                          fontFamily: 'var(--font-editorial)', overflow: 'hidden',
-                          textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 300,
-                        }}>{deriveEdge(trace)}</div>
-                      </div>
-
-                      <ConfidenceBadge level={trace.confidence} />
-                      <SideBadge side={trace.positionIntent.side} />
-                      <TraceBadge trace={trace} />
-                      <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 10,
-                        color: 'var(--text-tertiary)', letterSpacing: '0.04em',
-                      }}>{formatRelative(trace.createdAt)}</span>
-                      <span className="btn-trace">Open →</span>
-                    </div>
-
-                    {/* Mobile card */}
-                    <div style={{ display: 'none' }} className="show-mobile-block">
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <span style={{
-                            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)',
-                            background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
-                            padding: '2px 7px', borderRadius: 3,
-                          }}>{trace.assetSymbol}</span>
-                          <ConfidenceBadge level={trace.confidence} />
-                          <TraceBadge trace={trace} />
-                        </div>
-                        <span style={{
-                          fontFamily: 'var(--font-mono)', fontSize: 10,
-                          color: 'var(--text-tertiary)', flexShrink: 0,
-                        }}>{formatRelative(trace.createdAt)}</span>
-                      </div>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4, lineHeight: 1.4 }}>
-                        {trace.market}
-                      </div>
-                      <div style={{
-                        fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic',
-                        fontFamily: 'var(--font-editorial)', lineHeight: 1.5, marginBottom: 10, fontWeight: 300,
-                      }}>{deriveEdge(trace)}</div>
-                      <span className="btn-trace">Open trace →</span>
-                    </div>
-                  </div>
-                </Link>
-              )
-            })}
+            {filtered.map(trace => (
+              <TraceRow
+                key={trace.id}
+                trace={trace}
+                isNew={newTraceIds.has(trace.id)}
+              />
+            ))}
           </div>
         )}
 
@@ -476,32 +635,50 @@ export default function DashboardPage() {
           <div style={{
             marginTop: 28, padding: '14px 20px',
             border: '1px dashed var(--border)', borderRadius: 'var(--radius-lg)',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            flexWrap: 'wrap', gap: 12,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="live-dot" />
-              <span className="mono-label" style={{ color: 'var(--lime)' }}>Agent running · Arc testnet</span>
+              <span className="mono-label" style={{ color: 'var(--lime)' }}>
+                Agent running · refreshes every 30s
+              </span>
             </div>
-            <button onClick={fetchTraces} style={{
-              fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
-              textTransform: 'uppercase', color: 'var(--text-tertiary)',
-              background: 'transparent', border: 'none', cursor: 'pointer',
-            }}>↻ Refresh</button>
+            <button
+              onClick={() => fetchTraces()}
+              style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: 'var(--text-tertiary)',
+                background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 0',
+              }}
+            >↻ Refresh now</button>
           </div>
         )}
       </main>
 
       <style>{`
-        @media (max-width: 768px) {
-          .hide-mobile { display: none !important; }
-          .show-mobile-block { display: block !important; }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+        @media(max-width:768px){
+          .hide-mobile{display:none!important}
+          .show-mobile-block{display:block!important}
         }
+        .show-mobile-block{display:none}
       `}</style>
 
+      {/* Run modal */}
       {showModal && agents.length > 0 && (
-        <RunModal agents={agents} onClose={() => setShowModal(false)} onSuccess={handleRunSuccess} />
+        <RunModal
+          agents={agents}
+          onClose={() => setShowModal(false)}
+          onSuccess={handleRunSuccess}
+        />
       )}
-      {newTrace && <Toast trace={newTrace} onDismiss={() => setNewTrace(null)} />}
+
+      {/* Toast */}
+      {toast && (
+        <Toast trace={toast} onDismiss={() => setToast(null)} />
+      )}
     </>
   )
 }

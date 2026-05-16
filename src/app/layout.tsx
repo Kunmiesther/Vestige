@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import Link from 'next/link'
+import { WalletProvider } from '@/contexts/WalletContext'
+import { NavBar } from '@/components/NavBar'
 
 export const metadata: Metadata = {
   title: 'Vestige — Transparent AI Prediction Intelligence',
@@ -23,26 +24,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </div>
         <div className="grain" />
 
-        {/* Nav */}
-        <nav className="nav">
-          <Link href="/" className="nav-logo">VST<em>IGE</em></Link>
-          <div className="nav-links">
-            <a href="/dashboard" className="nav-link">Markets</a>
-            <a href="/dashboard" className="nav-link">Traces</a>
-            <a href="/dashboard" className="nav-link">Agent</a>
+        <WalletProvider>
+          <NavBar />
+          <div className="page-wrap" style={{ paddingTop: 56 }}>
+            {children}
           </div>
-          <div className="nav-right">
-            <span className="live-chip hide-mobile">
-              <span className="live-dot" />
-              Agent live
-            </span>
-            <span className="wallet-chip hide-mobile">0x4f2a…c81d</span>
-          </div>
-        </nav>
-
-        <div className="page-wrap" style={{ paddingTop: 56 }}>
-          {children}
-        </div>
+        </WalletProvider>
       </body>
     </html>
   )
