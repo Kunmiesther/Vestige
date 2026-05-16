@@ -28,15 +28,27 @@ export function WalletModal({ onClose }: WalletModalProps) {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, zIndex: 300,
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
-      background: 'rgba(5,5,7,0.9)', backdropFilter: 'blur(12px)',
-    }} onClick={e => e.target === e.currentTarget && onClose()}>
+        position: 'fixed', inset: 0, zIndex: 300,
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        paddingTop: '80px',
+        padding: '80px 16px 24px',
+        background: 'rgba(5,5,7,0.9)',
+        backdropFilter: 'blur(12px)',
+        overflowY: 'auto',
+      }} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{
-        background: 'var(--bg-card)', border: '1px solid var(--border-hover)',
-        borderRadius: 'var(--radius-lg)', padding: '32px 28px',
-        width: '100%', maxWidth: 400,
-      }}>
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-hover)',
+          borderRadius: 'var(--radius-lg)',
+          padding: '32px 28px',
+          width: '100%',
+          maxWidth: 400,
+          overflow: 'visible',
+          maxHeight: '90vh',
+          overflowY: 'auto' as const,
+        }}>
         <div style={{ marginBottom: 28 }}>
           <div className="mono-label" style={{ marginBottom: 8 }}>Connect wallet</div>
           <h2 style={{
@@ -53,14 +65,20 @@ export function WalletModal({ onClose }: WalletModalProps) {
           {/* Circle wallet — primary */}
           <button onClick={handleCircle} disabled={isConnecting}
             style={{
-              width: '100%', padding: '16px 18px',
-              background: connecting === 'circle' ? 'rgba(179,136,255,0.12)' : 'var(--violet-dim)',
-              border: '1px solid var(--violet-border)', borderRadius: 'var(--radius)',
-              cursor: isConnecting ? 'not-allowed' : 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              transition: 'background .15s',
-              opacity: isConnecting && connecting !== 'circle' ? 0.5 : 1,
-            }}>
+                width: '100%',
+                padding: '16px 18px',
+                background: connecting === 'circle' ? 'rgba(179,136,255,0.12)' : 'var(--violet-dim)',
+                border: '1px solid var(--violet-border)',
+                borderRadius: 'var(--radius)',
+                cursor: isConnecting ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                transition: 'background .15s',
+                opacity: isConnecting && connecting !== 'circle' ? 0.5 : 1,
+                minHeight: 72,
+                boxSizing: 'border-box' as const,
+              }}>
             <div style={{ textAlign: 'left' }}>
               <div style={{
                 fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 600,

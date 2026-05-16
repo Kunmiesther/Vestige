@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
-import { createTraceRepository } from '../../../../backend/traces/trace.repository'
-import type { ListTracesResponse, ListTracesQuery } from '../../../../backend/shared/types/api'
+import { createTraceRepository } from '@/backend/traces/trace.repository'
+import type { ListTracesResponse, ListTracesQuery } from '@/backend/shared/types/api'
 
 export async function GET(request: Request): Promise<NextResponse<ListTracesResponse>> {
   try {

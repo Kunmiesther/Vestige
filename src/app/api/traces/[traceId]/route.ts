@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
-import { createTraceRepository } from '../../../../../backend/traces/trace.repository'
-import type { GetTraceResponse } from '../../../../../backend/shared/types/api'
-import type { ApiErrorResponse } from '../../../../../backend/shared/types/api'
+import { createTraceRepository } from '@/backend/traces/trace.repository'
+import type { GetTraceResponse, ApiErrorResponse } from '@/backend/shared/types/api'
 
 interface RouteContext {
   params: Promise<{ traceId: string }>

@@ -434,3 +434,136 @@ a { color: inherit; text-decoration: none; }
   .blob-2 { width: 320px; height: 320px; }
   .blob-3, .blob-4 { display: none; }
 }
+
+/* ── PASTE THESE AT THE BOTTOM OF globals.css ── */
+
+/* Wallet modal — fix cropped first option + text contrast */
+.wallet-option-primary {
+  padding: 18px !important;
+  min-height: 72px;
+}
+
+/* Stronger text contrast throughout */
+:root {
+  --text-secondary: #9896b0;  /* was #6e6d80 — bumped up */
+  --text-tertiary: #5a5870;   /* was #3a3a4a — bumped up */
+}
+
+/* ── MOBILE RESPONSIVENESS ── */
+
+@media (max-width: 768px) {
+  /* Page padding */
+  main {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+    padding-top: 32px !important;
+  }
+
+  /* Two-column layouts → single column */
+  div[style*="grid-template-columns: minmax(0,1fr) 300px"],
+  div[style*="grid-template-columns: minmax(0, 1fr) 300px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Stats grids → 2 columns on mobile */
+  div[style*="repeat(4,1fr)"],
+  div[style*="repeat(4, 1fr)"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  div[style*="repeat(3,1fr)"],
+  div[style*="repeat(3, 1fr)"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  /* Header grid → stack */
+  div[style*="grid-template-columns: 1fr auto"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Display headlines */
+  h1[style*="clamp"] {
+    font-size: clamp(28px, 10vw, 44px) !important;
+  }
+
+  /* Landing hero */
+  .display-xl {
+    font-size: clamp(44px, 12vw, 72px) !important;
+  }
+
+  /* Subhead + CTA row → stack */
+  div[style*="grid-template-columns: 1fr auto"][style*="gap: 40px"] {
+    grid-template-columns: 1fr !important;
+    gap: 24px !important;
+  }
+
+  /* Stats strip on landing → 2×2 */
+  div[style*="repeat(4, 1fr)"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  /* How it works grid */
+  div[style*="repeat(auto-fit, minmax(240px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Feature table rows → stack */
+  div[style*="grid-template-columns: 160px 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+    gap: 6px !important;
+  }
+
+  /* Nav adjustments */
+  .nav {
+    padding: 0 14px !important;
+  }
+
+  /* Wallet button text — hide balance on very small screens */
+  @media (max-width: 380px) {
+    .wallet-balance-text {
+      display: none !important;
+    }
+  }
+
+  /* Run modal */
+  div[style*="maxWidth: 500"],
+  div[style*="max-width: 500px"] {
+    padding: 24px 18px !important;
+  }
+
+  /* Asset/price grid in modal → stack */
+  div[style*="gridTemplateColumns: '1fr 1fr'"],
+  div[style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Trace detail two-col → single */
+  main > div > div[style*="1fr 300px"] {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  /* Markets table rows → card style */
+  div[style*="grid-template-columns: 60px 1fr 100px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Position intent bar */
+  div[style*="flexWrap: 'wrap'"][style*="gap: 24"] {
+    gap: 12px !important;
+  }
+
+  /* Footer */
+  footer {
+    flex-direction: column !important;
+    gap: 8px !important;
+    text-align: center;
+  }
+}
+
+/* Show/hide helpers */
+.mobile-only { display: none; }
+@media (max-width: 768px) {
+  .mobile-only { display: block; }
+  .desktop-only { display: none !important; }
+}

@@ -5,24 +5,76 @@ import { VestigeError } from "../shared/errors";
 import type { Agent } from "../shared/types/agent";
 import type { Position } from "../shared/types/position";
 import type { ReasoningTrace } from "../shared/types/trace";
+import type { ListTracesQuery } from "../shared/types/api";
 
 export interface TraceRepository {
   findAgent(agentId: string): Promise<Agent>;
   createTrace(trace: ReasoningTrace): Promise<ReasoningTrace>;
   createPosition(position: Position): Promise<Position>;
+  // Extended — used by frontend API routes
+  listAgents(): Promise<Agent[]>;
+  listTraces(query?: ListTracesQuery): Promise<ReasoningTrace[]>;
+  findTrace(traceId: string): Promise<ReasoningTrace | null>;
 }
 
 export class SupabaseTraceRepository implements TraceRepository {
   constructor(private readonly supabase: SupabaseAdminClient = createSupabaseAdminClient()) {}
 
   async findAgent(agentId: string): Promise<Agent> {
-    const { data, error } = await this.supabase.from("agents").select("*").eq("id", agentId).single();
+    const { data, error } = await this.supabase
+      .from("agents")
+      .select("*")
+      .eq("id", agentId)
+      .single();
 
     if (error || !data) {
       throw new VestigeError(error?.message ?? "Agent not found.", "AGENT_NOT_FOUND");
     }
 
     return mapAgentRow(data);
+  }
+
+  async listAgents(): Promise<Agent[]> {
+    const { data, error } = await this.supabase
+      .from("agents")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw new VestigeError(error.message ?? "Failed to list agents.", "LIST_AGENTS_FAILED");
+    }
+
+    return (data ?? []).map(mapAgentRow);
+  }
+
+  async listTraces(query?: ListTracesQuery): Promise<ReasoningTrace[]> {
+    let q = this.supabase
+      .from("reasoning_traces")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(query?.limit ?? 50);
+
+    if (query?.agentId) q = q.eq("agent_id", query.agentId);
+    if (query?.assetSymbol) q = q.eq("asset_symbol", query.assetSymbol);
+
+    const { data, error } = await q;
+
+    if (error) {
+      throw new VestigeError(error.message ?? "Failed to list traces.", "LIST_TRACES_FAILED");
+    }
+
+    return (data ?? []).map(mapTraceRow);
+  }
+
+  async findTrace(traceId: string): Promise<ReasoningTrace | null> {
+    const { data, error } = await this.supabase
+      .from("reasoning_traces")
+      .select("*")
+      .eq("id", traceId)
+      .single();
+
+    if (error || !data) return null;
+    return mapTraceRow(data);
   }
 
   async createTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
@@ -58,10 +110,7 @@ export class MockTraceRepository implements TraceRepository {
   async findAgent(agentId: string): Promise<Agent> {
     const store = getMockStore();
     const existing = store.agents.get(agentId);
-
-    if (existing) {
-      return existing;
-    }
+    if (existing) return existing;
 
     const now = new Date().toISOString();
     const agent: Agent = {
@@ -81,6 +130,57 @@ export class MockTraceRepository implements TraceRepository {
     return agent;
   }
 
+  async listAgents(): Promise<Agent[]> {
+    const store = getMockStore();
+    const agents = Array.from(store.agents.values());
+
+    // If no agents exist yet, return a default demo agent so the
+    // Run Analysis modal always has something to select.
+    if (agents.length === 0) {
+      const now = new Date().toISOString();
+      const demo: Agent = {
+        id: "00000000-0000-4000-8000-000000000002",
+        builderId: "00000000-0000-4000-8000-000000000001",
+        name: "Vestige Demo Agent",
+        slug: "vestige-demo-agent",
+        model: "deepseek-r1",
+        status: "active",
+        systemPrompt:
+          "You are a market intelligence agent. Produce disciplined, structured trading reasoning only.",
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.agents.set(demo.id, demo);
+      return [demo];
+    }
+
+    return agents.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  async listTraces(query?: ListTracesQuery): Promise<ReasoningTrace[]> {
+    const store = getMockStore();
+    let traces = Array.from(store.traces.values());
+
+    if (query?.agentId) {
+      traces = traces.filter((t) => t.agentId === query.agentId);
+    }
+    if (query?.assetSymbol) {
+      traces = traces.filter((t) => t.assetSymbol === query.assetSymbol);
+    }
+
+    traces.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return traces.slice(0, query?.limit ?? 50);
+  }
+
+  async findTrace(traceId: string): Promise<ReasoningTrace | null> {
+    return getMockStore().traces.get(traceId) ?? null;
+  }
+
   async createTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
     getMockStore().traces.set(trace.id, trace);
     return trace;
@@ -93,8 +193,12 @@ export class MockTraceRepository implements TraceRepository {
 }
 
 export function createTraceRepository(): TraceRepository {
-  return hasSupabaseAdminConfig() ? new SupabaseTraceRepository() : new MockTraceRepository();
+  return hasSupabaseAdminConfig()
+    ? new SupabaseTraceRepository()
+    : new MockTraceRepository();
 }
+
+// ─── Row mappers ─────────────────────────────────────────────────────────────
 
 function mapAgentRow(row: Record<string, unknown>): Agent {
   return {
@@ -191,11 +295,12 @@ function toPositionRow(position: Position): Record<string, unknown> {
   };
 }
 
+// ─── Type guards ──────────────────────────────────────────────────────────────
+
 function asString(value: unknown): string {
   if (typeof value !== "string") {
     throw new VestigeError("Database row had an invalid string field.", "DB_INVALID_FIELD");
   }
-
   return value;
 }
 
@@ -204,15 +309,11 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function optionalNumber(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return value;
-  }
-
+  if (typeof value === "number") return value;
   if (typeof value === "string") {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : undefined;
   }
-
   return undefined;
 }
 
@@ -221,7 +322,9 @@ function asBoolean(value: unknown): boolean {
 }
 
 function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function asReasoningSteps(value: unknown): ReasoningTrace["reasoningSteps"] {
