@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useWallet } from '@/contexts/WalletContext'
 import { ARC_TESTNET } from '@/lib/arc'
 
@@ -14,21 +15,21 @@ export function WalletModal({ onClose }: WalletModalProps) {
 
   async function handleCircle() {
     setConnecting('circle')
-    await connectCircle()
+    const connected = await connectCircle()
     setConnecting(null)
-    onClose()
+    if (connected) onClose()
   }
 
   async function handleInjected() {
     setConnecting('injected')
-    await connectInjected()
+    const connected = await connectInjected()
     setConnecting(null)
-    onClose()
+    if (connected) onClose()
   }
 
-  return (
+  return createPortal(
     <div style={{
-        position: 'fixed', inset: 0, zIndex: 300,
+        position: 'fixed', inset: 0, zIndex: 90,
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
@@ -157,5 +158,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
         }}>Cancel</button>
       </div>
     </div>
+    ,
+    document.body
   )
 }

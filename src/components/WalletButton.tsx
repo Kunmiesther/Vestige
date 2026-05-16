@@ -10,6 +10,7 @@ export function WalletButton() {
   const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const modal = showModal ? <WalletModal onClose={() => setShowModal(false)} /> : null
 
   // Not connected
   if (!isConnected && !isConnecting) {
@@ -25,7 +26,7 @@ export function WalletButton() {
             transition: 'background .15s',
           }}
         >Connect wallet</button>
-        {showModal && <WalletModal onClose={() => setShowModal(false)} />}
+        {modal}
       </>
     )
   }
@@ -33,6 +34,7 @@ export function WalletButton() {
   // Connecting
   if (isConnecting) {
     return (
+      <>
       <div style={{
         fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
         textTransform: 'uppercase', color: 'var(--text-tertiary)',
@@ -43,6 +45,8 @@ export function WalletButton() {
         Connecting…
         <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
       </div>
+      {modal}
+      </>
     )
   }
 

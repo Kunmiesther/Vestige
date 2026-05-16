@@ -28,8 +28,8 @@ import { ARC_TESTNET } from '@/lib/arc'
 // ─── Context shape ────────────────────────────────────────────────────────────
 
 interface WalletContextValue extends WalletState {
-  connectCircle: () => Promise<void>
-  connectInjected: () => Promise<void>
+  connectCircle: () => Promise<boolean>
+  connectInjected: () => Promise<boolean>
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
@@ -124,11 +124,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         isConnecting: false,
         error: null,
       })
+      return true
     } catch (err) {
       patch({
         isConnecting: false,
         error: err instanceof Error ? err.message : 'Failed to connect Circle wallet',
       })
+      return false
     }
   }, [])
 
@@ -173,11 +175,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       })
 
       cleanupRef.current.push(offAccounts, offChain)
+      return true
     } catch (err) {
       patch({
         isConnecting: false,
         error: err instanceof Error ? err.message : 'Failed to connect wallet',
       })
+      return false
     }
   }, [])
 

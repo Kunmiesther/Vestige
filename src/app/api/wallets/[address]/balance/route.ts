@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
 /**
  * GET /api/wallets/:address/balance
@@ -26,10 +26,10 @@ interface RpcResponse {
 }
 
 export async function GET(
-  _request: Request,
-  { params }: { params: { address: string } }
+  _request: NextRequest,
+  { params }: { params: Promise<{ address: string }> }
 ): Promise<NextResponse> {
-  const { address } = params
+  const { address } = await params
 
   if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
     return NextResponse.json({ balance: '0.00' })
