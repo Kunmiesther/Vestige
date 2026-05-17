@@ -10,7 +10,7 @@ export const ARC_TESTNET = {
   name: 'Arc Testnet',
   currency: 'USDC',
   decimals: 18,
-  rpcUrl: process.env.NEXT_PUBLIC_ARC_RPC_URL ?? 'https://rpc.testnet.arc-node.thecanteenapp.com/v1/swrm_f7116dee1c18b0cfbff8c4a4936644a4aa1ecd37b9f8c7856da9fcc7a746aed2',
+  rpcUrl: process.env.NEXT_PUBLIC_ARC_RPC_URL ?? 'https://rpc.testnet.arc-node.thecanteenapp.com',
   explorerUrl: 'https://testnet.arcscan.app',
   faucetUrl: 'https://faucet.circle.com',
 } as const

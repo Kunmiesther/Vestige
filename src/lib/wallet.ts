@@ -16,6 +16,23 @@ import { ARC_TESTNET, ARC_CHAIN_PARAMS, truncateAddress } from './arc'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type WalletType = 'circle' | 'injected' | null
+export type SelfCustodyConnectorId = 'metamask' | 'rabby' | 'coinbase' | 'walletconnect'
+
+export interface SelfCustodyConnector {
+  id: SelfCustodyConnectorId
+  name: string
+  description: string
+  available: boolean
+}
+
+interface Eip1193Provider {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>
+  on?: (event: string, cb: (...args: never[]) => void) => void
+  removeListener?: (event: string, cb: (...args: never[]) => void) => void
+  isMetaMask?: boolean
+  isRabby?: boolean
+  isCoinbaseWallet?: boolean
+}
 
 export interface WalletState {
   address: string | null
@@ -30,7 +47,7 @@ export interface WalletState {
 
 export interface WalletActions {
   connectCircle: () => Promise<void>
-  connectInjected: () => Promise<void>
+  connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<void>
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
@@ -73,27 +90,52 @@ export async function fetchWalletBalance(address: string): Promise<string> {
 
 // ─── Injected wallet (MetaMask / EIP-1193) helpers ───────────────────────────
 
-function getProvider(): { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } | null {
-  if (typeof window === 'undefined') return null
-  return (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum ?? null
+function getInjectedProviders(): Eip1193Provider[] {
+  if (typeof window === 'undefined') return []
+  const ethereum = (window as Window & { ethereum?: Eip1193Provider & { providers?: Eip1193Provider[] } }).ethereum
+  if (!ethereum) return []
+  return ethereum.providers?.length ? ethereum.providers : [ethereum]
 }
 
-export async function requestAccounts(): Promise<string[]> {
-  const provider = getProvider()
-  if (!provider) throw new Error('No injected wallet found. Install MetaMask or Rabby.')
+function getProvider(connectorId?: SelfCustodyConnectorId): Eip1193Provider | null {
+  const providers = getInjectedProviders()
+  if (connectorId === 'metamask') return providers.find(provider => provider.isMetaMask && !provider.isRabby) ?? null
+  if (connectorId === 'rabby') return providers.find(provider => provider.isRabby) ?? null
+  if (connectorId === 'coinbase') return providers.find(provider => provider.isCoinbaseWallet) ?? null
+  if (connectorId === 'walletconnect') return null
+  return providers[0] ?? null
+}
+
+export function listSelfCustodyConnectors(): SelfCustodyConnector[] {
+  return [
+    { id: 'metamask', name: 'MetaMask', description: 'Injected browser wallet', available: Boolean(getProvider('metamask')) },
+    { id: 'rabby', name: 'Rabby', description: 'Injected browser wallet', available: Boolean(getProvider('rabby')) },
+    { id: 'coinbase', name: 'Coinbase Wallet', description: 'Injected browser wallet', available: Boolean(getProvider('coinbase')) },
+    { id: 'walletconnect', name: 'WalletConnect', description: 'Mobile/session connector', available: false },
+  ]
+}
+
+export async function requestAccounts(connectorId: SelfCustodyConnectorId): Promise<string[]> {
+  const provider = getProvider(connectorId)
+  if (!provider) {
+    if (connectorId === 'walletconnect') {
+      throw new Error('WalletConnect is not configured in this build.')
+    }
+    throw new Error(`No ${connectorId} provider found.`)
+  }
   const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[]
   return accounts
 }
 
-export async function getChainId(): Promise<number> {
-  const provider = getProvider()
+export async function getChainId(connectorId?: SelfCustodyConnectorId): Promise<number> {
+  const provider = getProvider(connectorId)
   if (!provider) return 0
   const chainIdHex = await provider.request({ method: 'eth_chainId' }) as string
   return parseInt(chainIdHex, 16)
 }
 
-export async function switchToArcNetwork(): Promise<void> {
-  const provider = getProvider()
+export async function switchToArcNetwork(connectorId?: SelfCustodyConnectorId): Promise<void> {
+  const provider = getProvider(connectorId)
   if (!provider) throw new Error('No injected wallet found.')
 
   try {
@@ -108,26 +150,30 @@ export async function switchToArcNetwork(): Promise<void> {
         method: 'wallet_addEthereumChain',
         params: [ARC_CHAIN_PARAMS],
       })
+      await provider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: ARC_CHAIN_PARAMS.chainId }],
+      })
     } else {
       throw err
     }
   }
 }
 
-export function onAccountsChanged(callback: (accounts: string[]) => void): () => void {
-  const provider = getProvider()
+export function onAccountsChanged(callback: (accounts: string[]) => void, connectorId?: SelfCustodyConnectorId): () => void {
+  const provider = getProvider(connectorId)
   if (!provider) return () => {}
-  const typed = provider as unknown as { on: (event: string, cb: (accounts: string[]) => void) => void; removeListener: (event: string, cb: (accounts: string[]) => void) => void }
-  typed.on('accountsChanged', callback)
-  return () => typed.removeListener('accountsChanged', callback)
+  const typed = provider as unknown as { on?: (event: string, cb: (accounts: string[]) => void) => void; removeListener?: (event: string, cb: (accounts: string[]) => void) => void }
+  typed.on?.('accountsChanged', callback)
+  return () => typed.removeListener?.('accountsChanged', callback)
 }
 
-export function onChainChanged(callback: (chainId: string) => void): () => void {
-  const provider = getProvider()
+export function onChainChanged(callback: (chainId: string) => void, connectorId?: SelfCustodyConnectorId): () => void {
+  const provider = getProvider(connectorId)
   if (!provider) return () => {}
-  const typed = provider as unknown as { on: (event: string, cb: (chainId: string) => void) => void; removeListener: (event: string, cb: (chainId: string) => void) => void }
-  typed.on('chainChanged', callback)
-  return () => typed.removeListener('chainChanged', callback)
+  const typed = provider as unknown as { on?: (event: string, cb: (chainId: string) => void) => void; removeListener?: (event: string, cb: (chainId: string) => void) => void }
+  typed.on?.('chainChanged', callback)
+  return () => typed.removeListener?.('chainChanged', callback)
 }
 
 // ─── Session persistence ──────────────────────────────────────────────────────

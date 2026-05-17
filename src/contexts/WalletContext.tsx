@@ -22,6 +22,7 @@ import {
   clearPersistedWallet,
   type WalletState,
   type WalletType,
+  type SelfCustodyConnectorId,
 } from '@/lib/wallet'
 import { ARC_TESTNET } from '@/lib/arc'
 
@@ -29,7 +30,7 @@ import { ARC_TESTNET } from '@/lib/arc'
 
 interface WalletContextValue extends WalletState {
   connectCircle: () => Promise<boolean>
-  connectInjected: () => Promise<boolean>
+  connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<boolean>
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
@@ -52,6 +53,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   })
 
   const cleanupRef = useRef<(() => void)[]>([])
+  const injectedConnectorRef = useRef<SelfCustodyConnectorId | null>(null)
 
   function patch(updates: Partial<WalletState>) {
     setState(prev => ({ ...prev, ...updates }))
@@ -135,17 +137,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // ── Connect injected ────────────────────────────────────────────────────────
-  const connectInjected = useCallback(async () => {
+  const connectInjected = useCallback(async (connectorId: SelfCustodyConnectorId) => {
     patch({ isConnecting: true, error: null })
     try {
-      const accounts = await requestAccounts()
+      const accounts = await requestAccounts(connectorId)
       const address = accounts[0]
       if (!address) throw new Error('No accounts returned from wallet.')
 
-      const chainId = await getChainId()
+      const chainId = await getChainId(connectorId)
       const isOnArc = chainId === ARC_TESTNET.chainId
       const balance = await fetchWalletBalance(address).catch(() => '0.00')
 
+      injectedConnectorRef.current = connectorId
       persistWallet(address, 'injected')
       patch({
         address,
@@ -162,17 +165,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const offAccounts = onAccountsChanged((accs) => {
         if (accs.length === 0) {
           clearPersistedWallet()
+          injectedConnectorRef.current = null
           patch({ address: null, isConnected: false, walletType: null, balance: null })
         } else {
           persistWallet(accs[0], 'injected')
           patch({ address: accs[0] })
         }
-      })
+      }, connectorId)
 
       const offChain = onChainChanged((chainIdHex) => {
         const id = parseInt(chainIdHex, 16)
         patch({ chainId: id, isOnArc: id === ARC_TESTNET.chainId })
-      })
+      }, connectorId)
 
       cleanupRef.current.push(offAccounts, offChain)
       return true
@@ -188,7 +192,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // ── Switch to Arc ───────────────────────────────────────────────────────────
   const switchToArc = useCallback(async () => {
     try {
-      await switchToArcNetwork()
+      await switchToArcNetwork(injectedConnectorRef.current ?? undefined)
       patch({ chainId: ARC_TESTNET.chainId, isOnArc: true, error: null })
     } catch (err) {
       patch({ error: err instanceof Error ? err.message : 'Failed to switch network' })
@@ -198,6 +202,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // ── Disconnect ──────────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
     clearPersistedWallet()
+    injectedConnectorRef.current = null
     cleanupRef.current.forEach(fn => fn())
     cleanupRef.current = []
     setState({
