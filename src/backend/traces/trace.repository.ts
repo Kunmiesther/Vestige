@@ -3,9 +3,10 @@ import { createSupabaseAdminClient, hasSupabaseAdminConfig } from "../db/supabas
 import { getMockStore } from "../db/mock.store";
 import { VestigeError } from "../shared/errors";
 import type { Agent } from "../shared/types/agent";
-import type { Position } from "../shared/types/position";
+import type { Follow, Position } from "../shared/types/position";
 import type { ReasoningTrace } from "../shared/types/trace";
 import type { ListTracesQuery } from "../shared/types/api";
+import { VESTIGE_AGENT_PROFILES, profileToAgent } from "../agents/agent.prompts";
 
 export interface TraceRepository {
   findAgent(agentId: string): Promise<Agent>;
@@ -15,6 +16,11 @@ export interface TraceRepository {
   listAgents(): Promise<Agent[]>;
   listTraces(query?: ListTracesQuery): Promise<ReasoningTrace[]>;
   findTrace(traceId: string): Promise<ReasoningTrace | null>;
+  updateTrace(trace: ReasoningTrace): Promise<ReasoningTrace>;
+  listPositions(query?: { agentId?: string; isOpen?: boolean }): Promise<Position[]>;
+  findPosition(positionId: string): Promise<Position | null>;
+  updatePosition(position: Position): Promise<Position>;
+  followPosition(follow: Follow): Promise<Follow>;
 }
 
 export class SupabaseTraceRepository implements TraceRepository {
@@ -91,6 +97,21 @@ export class SupabaseTraceRepository implements TraceRepository {
     return mapTraceRow(data);
   }
 
+  async updateTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
+    const { data, error } = await this.supabase
+      .from("reasoning_traces")
+      .update(toTraceRow(trace))
+      .eq("id", trace.id)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw new VestigeError(error?.message ?? "Failed to update trace.", "TRACE_UPDATE_FAILED");
+    }
+
+    return mapTraceRow(data);
+  }
+
   async createPosition(position: Position): Promise<Position> {
     const { data, error } = await this.supabase
       .from("positions")
@@ -104,6 +125,63 @@ export class SupabaseTraceRepository implements TraceRepository {
 
     return mapPositionRow(data);
   }
+
+  async listPositions(query?: { agentId?: string; isOpen?: boolean }): Promise<Position[]> {
+    let q = this.supabase
+      .from("positions")
+      .select("*")
+      .order("opened_at", { ascending: false });
+
+    if (query?.agentId) q = q.eq("agent_id", query.agentId);
+    if (query?.isOpen !== undefined) q = q.eq("is_open", query.isOpen);
+
+    const { data, error } = await q;
+    if (error) {
+      throw new VestigeError(error.message ?? "Failed to list positions.", "LIST_POSITIONS_FAILED");
+    }
+
+    return (data ?? []).map(mapPositionRow);
+  }
+
+  async findPosition(positionId: string): Promise<Position | null> {
+    const { data, error } = await this.supabase
+      .from("positions")
+      .select("*")
+      .eq("id", positionId)
+      .single();
+
+    if (error || !data) return null;
+    return mapPositionRow(data);
+  }
+
+  async updatePosition(position: Position): Promise<Position> {
+    const { data, error } = await this.supabase
+      .from("positions")
+      .update(toPositionRow(position))
+      .eq("id", position.id)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw new VestigeError(error?.message ?? "Failed to update position.", "POSITION_UPDATE_FAILED");
+    }
+
+    return mapPositionRow(data);
+  }
+
+  async followPosition(follow: Follow): Promise<Follow> {
+    const { data, error } = await this.supabase
+      .from("follows")
+      .insert(toFollowRow(follow))
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw new VestigeError(error?.message ?? "Failed to follow position.", "FOLLOW_POSITION_FAILED");
+    }
+
+    return mapFollowRow(data);
+  }
 }
 
 export class MockTraceRepository implements TraceRepository {
@@ -111,13 +189,20 @@ export class MockTraceRepository implements TraceRepository {
     const store = getMockStore();
     const existing = store.agents.get(agentId);
     if (existing) return existing;
+    const profile = VESTIGE_AGENT_PROFILES.find((agent) => agent.id === agentId);
+    if (profile) {
+      const agent = profileToAgent(profile, new Date().toISOString());
+      store.agents.set(agent.id, agent);
+      return agent;
+    }
 
     const now = new Date().toISOString();
     const agent: Agent = {
       id: agentId,
       builderId: "00000000-0000-4000-8000-000000000001",
-      name: "Vestige Demo Agent",
-      slug: "vestige-demo-agent",
+      name: "Vestige Committee",
+      slug: "vestige-committee",
+      description: "Default production committee synthesizer for market reasoning traces.",
       model: "deepseek-r1",
       status: "active",
       systemPrompt:
@@ -132,17 +217,24 @@ export class MockTraceRepository implements TraceRepository {
 
   async listAgents(): Promise<Agent[]> {
     const store = getMockStore();
+    const now = new Date().toISOString();
+    for (const profile of VESTIGE_AGENT_PROFILES) {
+      if (!store.agents.has(profile.id)) {
+        store.agents.set(profile.id, profileToAgent(profile, now));
+      }
+    }
     const agents = Array.from(store.agents.values());
 
-    // If no agents exist yet, return a default demo agent so the
-    // Run Analysis modal always has something to select.
+    // If no persisted agents exist yet, keep the built-in committee available
+    // so a fresh local deployment can run a production-shaped trace immediately.
     if (agents.length === 0) {
       const now = new Date().toISOString();
-      const demo: Agent = {
+      const fallbackAgent: Agent = {
         id: "00000000-0000-4000-8000-000000000002",
         builderId: "00000000-0000-4000-8000-000000000001",
-        name: "Vestige Demo Agent",
-        slug: "vestige-demo-agent",
+        name: "Vestige Committee",
+        slug: "vestige-committee",
+        description: "Default production committee synthesizer for market reasoning traces.",
         model: "deepseek-r1",
         status: "active",
         systemPrompt:
@@ -150,8 +242,8 @@ export class MockTraceRepository implements TraceRepository {
         createdAt: now,
         updatedAt: now,
       };
-      store.agents.set(demo.id, demo);
-      return [demo];
+      store.agents.set(fallbackAgent.id, fallbackAgent);
+      return [fallbackAgent];
     }
 
     return agents.sort(
@@ -186,9 +278,35 @@ export class MockTraceRepository implements TraceRepository {
     return trace;
   }
 
+  async updateTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
+    getMockStore().traces.set(trace.id, trace);
+    return trace;
+  }
+
   async createPosition(position: Position): Promise<Position> {
     getMockStore().positions.set(position.id, position);
     return position;
+  }
+
+  async listPositions(query?: { agentId?: string; isOpen?: boolean }): Promise<Position[]> {
+    let positions = Array.from(getMockStore().positions.values());
+    if (query?.agentId) positions = positions.filter((position) => position.agentId === query.agentId);
+    if (query?.isOpen !== undefined) positions = positions.filter((position) => position.isOpen === query.isOpen);
+    return positions.sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime());
+  }
+
+  async findPosition(positionId: string): Promise<Position | null> {
+    return getMockStore().positions.get(positionId) ?? null;
+  }
+
+  async updatePosition(position: Position): Promise<Position> {
+    getMockStore().positions.set(position.id, position);
+    return position;
+  }
+
+  async followPosition(follow: Follow): Promise<Follow> {
+    getMockStore().follows.set(follow.id, follow);
+    return follow;
   }
 }
 
@@ -228,10 +346,13 @@ function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
     catalysts: asStringArray(row.catalysts),
     confidence: asConfidence(row.confidence),
     positionIntent: asPositionIntent(row.position_intent),
+    verdict: asStructuredVerdict(row.verdict),
     rawModelOutput: optionalString(row.raw_model_output),
     status: asTraceStatus(row.status),
     ipfsCid: optionalString(row.ipfs_cid),
     irysId: optionalString(row.irys_id),
+    txHash: optionalString(row.tx_hash),
+    premium: asBoolean(row.premium),
     createdAt: asString(row.created_at),
     publishedAt: optionalString(row.published_at),
   };
@@ -255,6 +376,16 @@ function mapPositionRow(row: Record<string, unknown>): Position {
   };
 }
 
+function mapFollowRow(row: Record<string, unknown>): Follow {
+  return {
+    id: asString(row.id),
+    userId: asString(row.user_id),
+    agentId: asString(row.agent_id),
+    positionId: optionalString(row.position_id),
+    createdAt: asString(row.created_at),
+  };
+}
+
 function toTraceRow(trace: ReasoningTrace): Record<string, unknown> {
   return {
     id: trace.id,
@@ -268,10 +399,13 @@ function toTraceRow(trace: ReasoningTrace): Record<string, unknown> {
     catalysts: trace.catalysts,
     confidence: trace.confidence,
     position_intent: trace.positionIntent,
+    verdict: trace.verdict,
     raw_model_output: trace.rawModelOutput,
     status: trace.status,
     ipfs_cid: trace.ipfsCid,
     irys_id: trace.irysId,
+    tx_hash: trace.txHash,
+    premium: trace.premium,
     created_at: trace.createdAt,
     published_at: trace.publishedAt,
   };
@@ -292,6 +426,16 @@ function toPositionRow(position: Position): Record<string, unknown> {
     closed_at: position.closedAt,
     pnl_percent: position.pnlPercent,
     is_open: position.isOpen,
+  };
+}
+
+function toFollowRow(follow: Follow): Record<string, unknown> {
+  return {
+    id: follow.id,
+    user_id: follow.userId,
+    agent_id: follow.agentId,
+    position_id: follow.positionId,
+    created_at: follow.createdAt,
   };
 }
 
@@ -335,12 +479,23 @@ function asPositionIntent(value: unknown): ReasoningTrace["positionIntent"] {
   return value as ReasoningTrace["positionIntent"];
 }
 
+function asStructuredVerdict(value: unknown): ReasoningTrace["verdict"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return value as ReasoningTrace["verdict"];
+}
+
 function asAgentStatus(value: unknown): Agent["status"] {
   return value === "paused" || value === "archived" ? value : "active";
 }
 
 function asTraceStatus(value: unknown): ReasoningTrace["status"] {
-  return value === "draft" || value === "pinned" || value === "failed" ? value : "stored";
+  return value === "draft" ||
+    value === "publishing" ||
+    value === "published" ||
+    value === "pinned" ||
+    value === "failed"
+    ? value
+    : "stored";
 }
 
 function asConfidence(value: unknown): ReasoningTrace["confidence"] {

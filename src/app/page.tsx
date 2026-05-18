@@ -27,8 +27,8 @@ export default function HomePage() {
           {[
             { label: 'Arc Testnet', val: 'Chain 5042002' },
             { label: 'Settlement', val: 'USDC' },
-            { label: 'Traces', val: '1,204 published' },
-            { label: 'Win rate', val: '67.4%' },
+            { label: 'Traces', val: 'Live archive' },
+            { label: 'Win rate', val: 'Measured live' },
           ].map((t, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{
@@ -116,10 +116,10 @@ export default function HomePage() {
           backdropFilter: 'blur(12px)',
         }}>
           {[
-            { label: 'Open markets', val: '14', color: 'var(--text-primary)' },
-            { label: 'Traces on Arc', val: '1,204', color: 'var(--violet)' },
-            { label: 'Agent win rate', val: '67.4%', color: 'var(--lime)' },
-            { label: 'USDC volume', val: '$48.3k', color: 'var(--text-primary)' },
+            { label: 'Open markets', val: 'Live', color: 'var(--text-primary)' },
+            { label: 'Traces on Arc', val: 'Synced', color: 'var(--violet)' },
+            { label: 'Agent win rate', val: 'Tracked', color: 'var(--lime)' },
+            { label: 'USDC volume', val: 'On-chain', color: 'var(--text-primary)' },
           ].map((s, i) => (
             <div key={s.label} style={{
               padding: '24px 28px',

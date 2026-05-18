@@ -3,7 +3,8 @@ import { z } from "zod";
 export const positionSideSchema = z.enum(["long", "short", "neutral"]);
 export const confidenceLevelSchema = z.enum(["low", "medium", "high"]);
 export const timeHorizonSchema = z.enum(["intraday", "swing", "long-term"]);
-export const traceStatusSchema = z.enum(["draft", "stored", "pinned", "failed"]);
+export const traceStatusSchema = z.enum(["draft", "stored", "publishing", "published", "pinned", "failed"]);
+export const verdictActionSchema = z.enum(["follow", "fade", "watch", "avoid"]);
 
 export const reasoningStepSchema = z.object({
   order: z.number().int().nonnegative(),
@@ -21,6 +22,15 @@ export const positionIntentSchema = z.object({
   timeHorizon: timeHorizonSchema,
 });
 
+export const structuredVerdictSchema = z.object({
+  action: verdictActionSchema,
+  summary: z.string(),
+  confidence: confidenceLevelSchema,
+  score: z.number().min(0).max(100),
+  primaryDrivers: z.array(z.string()),
+  invalidation: z.array(z.string()),
+});
+
 export const reasoningTraceSchema = z.object({
   id: z.string().uuid(),
   agentId: z.string().uuid(),
@@ -33,10 +43,13 @@ export const reasoningTraceSchema = z.object({
   catalysts: z.array(z.string()),
   confidence: confidenceLevelSchema,
   positionIntent: positionIntentSchema,
+  verdict: structuredVerdictSchema.optional(),
   rawModelOutput: z.string().optional(),
   status: traceStatusSchema,
   ipfsCid: z.string().optional(),
   irysId: z.string().optional(),
+  txHash: z.string().optional(),
+  premium: z.boolean().optional(),
   createdAt: z.string(),
   publishedAt: z.string().optional(),
 });

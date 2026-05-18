@@ -7,7 +7,7 @@ import { truncateAddress } from '@/lib/arc'
 import { ARC_TESTNET } from '@/lib/arc'
 
 export function WalletButton() {
-  const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect } = useWallet()
+  const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect, refreshBalance } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
   const modal = showModal ? <WalletModal onClose={() => setShowModal(false)} /> : null
@@ -90,7 +90,7 @@ export function WalletButton() {
         }} />
         {address ? truncateAddress(address) : '—'}
         {balance && (
-          <span style={{ color: 'var(--text-tertiary)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+          <span className="wallet-balance-text" style={{ color: 'var(--text-tertiary)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
             {parseFloat(balance).toFixed(2)} USDC
           </span>
         )}
@@ -149,6 +149,17 @@ export function WalletButton() {
                 }}
               >View on Arcscan ↗</a>
             )}
+
+            <button
+              onClick={async () => { await refreshBalance(); setShowDropdown(false) }}
+              style={{
+                display: 'block', width: '100%', padding: '10px 16px',
+                background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+                letterSpacing: '0.04em', transition: 'background .15s',
+                borderBottom: '1px solid var(--border)',
+              }}
+            >Refresh balance</button>
 
             {/* Disconnect */}
             <button

@@ -21,5 +21,6 @@ export interface Follow {
   id: UUID;
   userId: UUID;
   agentId: UUID;
+  positionId?: UUID;
   createdAt: ISODateTime;
 }

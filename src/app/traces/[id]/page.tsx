@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { getTrace, ApiError } from '@/lib/api'
+import { getTrace, publishTrace, ApiError } from '@/lib/api'
 import { formatDate, formatRelative, confidenceLabel, sideLabel, sideColor, truncateHash } from '@/lib/trace-utils'
 import { arcTxUrl } from '@/lib/arc'
 import type { ReasoningTrace, ConfidenceLevel, TraceStatus, ReasoningStep } from '@/backend/shared/types/trace'
@@ -18,6 +18,8 @@ function StatusBadge({ status }: { status: TraceStatus }) {
   const map: Record<TraceStatus, { cls: string; label: string }> = {
     draft:  { cls: 'status-watching',    label: 'Draft'     },
     stored: { cls: 'status-watching',    label: 'Stored'    },
+    publishing: { cls: 'status-watching', label: 'Publishing' },
+    published: { cls: 'status-in_position', label: 'Published' },
     pinned: { cls: 'status-in_position', label: 'Published' },
     failed: { cls: 'status-exited',      label: 'Failed'    },
   }
@@ -25,11 +27,12 @@ function StatusBadge({ status }: { status: TraceStatus }) {
   return <span className={`status-badge ${cls}`}>{label}</span>
 }
 
-function ArcBadge({ status, ipfsCid }: { status: TraceStatus; ipfsCid?: string }) {
-  const published = status === 'pinned' && !!ipfsCid
+function ArcBadge({ status }: { status: TraceStatus }) {
+  const published = status === 'published' || status === 'pinned'
+  const label = published ? 'Published on Arc' : status === 'publishing' ? 'Publishing to Arc' : 'Pending publication'
   return (
     <span className={`arc-badge ${published ? 'arc-published' : 'arc-pending'}`}>
-      {published ? '✓ On Arc' : '◌ Pending publication'}
+      {label}
     </span>
   )
 }
@@ -94,6 +97,8 @@ export default function TraceDetailPage() {
   const [trace, setTrace] = useState<ReasoningTrace | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [isPublishing, setIsPublishing] = useState(false)
 
   useEffect(() => {
     if (!traceId) return
@@ -103,6 +108,20 @@ export default function TraceDetailPage() {
       .catch(e => setError(e instanceof ApiError ? e.message : 'Trace not found.'))
       .finally(() => setLoading(false))
   }, [traceId])
+
+  async function handlePublish() {
+    if (!trace || isPublishing) return
+    setIsPublishing(true)
+    setActionError(null)
+    try {
+      const updated = await publishTrace(trace.id)
+      setTrace(updated)
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to publish trace.')
+    } finally {
+      setIsPublishing(false)
+    }
+  }
 
   if (loading) return <Skeleton />
 
@@ -145,7 +164,7 @@ export default function TraceDetailPage() {
           }}>{trace.assetSymbol}</span>
           <ConfidenceBadge level={trace.confidence} />
           <StatusBadge status={trace.status} />
-          <ArcBadge status={trace.status} ipfsCid={trace.ipfsCid} />
+          <ArcBadge status={trace.status} />
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
             marginLeft: 'auto', letterSpacing: '0.04em',
@@ -374,7 +393,7 @@ export default function TraceDetailPage() {
           <div className="card" style={{ padding: '18px 20px', background: 'rgba(5,5,7,0.9)' }}>
             <div className="mono-label" style={{ marginBottom: 14 }}>Arc verification</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <ArcBadge status={trace.status} ipfsCid={trace.ipfsCid} />
+              <ArcBadge status={trace.status} />
 
               <div>
                 <div className="mono-label" style={{ marginBottom: 4 }}>Trace ID</div>
@@ -392,18 +411,55 @@ export default function TraceDetailPage() {
                 </div>
               )}
 
+              {trace.txHash && (
+                <div>
+                  <div className="mono-label" style={{ marginBottom: 4 }}>Tx hash</div>
+                  <a
+                    href={arcTxUrl(trace.txHash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--lime)', wordBreak: 'break-all', lineHeight: 1.6 }}
+                  >
+                    {truncateHash(trace.txHash)} open
+                  </a>
+                </div>
+              )}
+
               {trace.irysId && (
                 <div>
                   <div className="mono-label" style={{ marginBottom: 4 }}>Irys ID</div>
                   <a
-                    href={arcTxUrl(trace.irysId)}
+                    href={`https://gateway.irys.xyz/${trace.irysId}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--lime)', lineHeight: 1.6 }}
                   >
-                    {truncateHash(trace.irysId)} ↗
+                    {truncateHash(trace.irysId)} open
                   </a>
                 </div>
+              )}
+
+              {actionError && (
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember)',
+                  background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.22)',
+                  borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+                }}>{actionError}</div>
+              )}
+
+              {(trace.status === 'stored' || trace.status === 'draft') && (
+                <button
+                  onClick={handlePublish}
+                  disabled={isPublishing}
+                  className="btn-primary"
+                  style={{
+                    justifyContent: 'center',
+                    opacity: isPublishing ? 0.7 : 1,
+                    cursor: isPublishing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {isPublishing ? 'Publishing...' : 'Publish to Arc'}
+                </button>
               )}
 
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
@@ -424,6 +480,53 @@ export default function TraceDetailPage() {
               </div>
             </div>
           </div>
+
+          {trace.verdict && (
+            <div className="card" style={{ padding: '18px 20px' }}>
+              <div className="mono-label" style={{ marginBottom: 14 }}>Verdict</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <span className="mono-label">Action</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {trace.verdict.action}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <span className="mono-label">Score</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)' }}>
+                    {trace.verdict.score}/100
+                  </span>
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  {trace.verdict.summary}
+                </p>
+                {trace.verdict.primaryDrivers.length > 0 && (
+                  <div>
+                    <div className="mono-label" style={{ marginBottom: 6 }}>Primary drivers</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {trace.verdict.primaryDrivers.map((driver, index) => (
+                        <div key={index} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                          {driver}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {trace.verdict.invalidation.length > 0 && (
+                  <div>
+                    <div className="mono-label" style={{ marginBottom: 6 }}>Invalidation</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {trace.verdict.invalidation.map((item, index) => (
+                        <div key={index} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember)', lineHeight: 1.6 }}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <Link href="/traces" className="btn-ghost" style={{ justifyContent: 'center', width: '100%' }}>
             ← All traces

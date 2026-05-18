@@ -7,12 +7,18 @@
 import type { Agent } from '@/backend/shared/types/agent'
 import type { ReasoningTrace } from '@/backend/shared/types/trace'
 import type { Position } from '@/backend/shared/types/position'
+import type { MarketSnapshot } from '@/backend/markets/market.types'
 import type {
   RunAgentRequest,
   RunAgentResponse,
   ListAgentsResponse,
   ListTracesResponse,
   GetTraceResponse,
+  GetMarketSnapshotResponse,
+  CctpQuoteRequest,
+  CctpQuoteResponse,
+  CctpTransferRequest,
+  CctpTransferResponse,
   ApiErrorResponse,
 } from '@/backend/shared/types/api'
 
@@ -121,8 +127,9 @@ export async function getTrace(traceId: string): Promise<ReasoningTrace> {
  * POST /api/traces/:traceId/publish
  * Triggers IPFS/Irys publication of a stored trace.
  */
-export async function publishTrace(traceId: string): Promise<void> {
-  await apiFetch<unknown>(`/api/traces/${traceId}/publish`, { method: 'POST' })
+export async function publishTrace(traceId: string): Promise<ReasoningTrace> {
+  const data = await apiFetch<{ trace: ReasoningTrace }>(`/api/traces/${traceId}/publish`, { method: 'POST' })
+  return data.trace
 }
 
 // ─── Positions ───────────────────────────────────────────────────────────────
@@ -143,6 +150,37 @@ export async function listPositions(params?: {
   return data.positions
 }
 
+export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot | null> {
+  const qs = new URLSearchParams({ symbol })
+  const data = await apiFetch<GetMarketSnapshotResponse>(`/api/markets/snapshot?${qs.toString()}`)
+  return data.snapshot
+}
+
+export async function getCctpQuote(request: CctpQuoteRequest): Promise<CctpQuoteResponse> {
+  return apiFetch<CctpQuoteResponse>('/api/bridge/cctp/quote', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  })
+}
+
+export async function submitCctpTransfer(request: CctpTransferRequest): Promise<CctpTransferResponse> {
+  return apiFetch<CctpTransferResponse>('/api/bridge/cctp/transfer', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  })
+}
+
 // ─── Re-exports for convenience ──────────────────────────────────────────────
 
-export type { Agent, ReasoningTrace, Position, RunAgentRequest, RunAgentResponse }
+export type {
+  Agent,
+  ReasoningTrace,
+  Position,
+  MarketSnapshot,
+  RunAgentRequest,
+  RunAgentResponse,
+  CctpQuoteRequest,
+  CctpQuoteResponse,
+  CctpTransferRequest,
+  CctpTransferResponse,
+}

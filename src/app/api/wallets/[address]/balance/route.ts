@@ -6,12 +6,12 @@ import { NextRequest, NextResponse } from 'next/server'
  * Uses direct JSON-RPC call to Arc node.
  */
 
-const ARC_RPC = process.env.ARC_RPC_URL ??
-  'https://rpc.testnet.arc-node.thecanteenapp.com/v1/swrm_f7116dee1c18b0cfbff8c4a4936644a4aa1ecd37b9f8c7856da9fcc7a746aed2'
+const ARC_RPC = process.env.ARC_RPC_URL ?? process.env.RPC?.trim() ??
+  'https://rpc.testnet.arc.network'
 
 // USDC contract address on Arc testnet
-// https://docs.arc.io/arc/references/contract-addresses
-const USDC_CONTRACT = '0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9'
+// https://docs.arc.network/arc/references/contract-addresses
+const USDC_CONTRACT = '0x3600000000000000000000000000000000000000'
 
 // ERC-20 balanceOf(address) function selector
 const BALANCE_OF_SELECTOR = '0x70a08231'
@@ -60,15 +60,15 @@ export async function GET(
       return NextResponse.json({ balance: '0.00' })
     }
 
-    // USDC has 6 decimals on most chains but 18 on Arc (native gas token)
+    // The Arc ERC-20 interface uses 6 decimals.
     const raw = BigInt(json.result)
-    const divisor = BigInt(1e18)
+    const divisor = BigInt(1e6)
     const whole = raw / divisor
     const fraction = raw % divisor
 
     const formatted = fraction === 0n
       ? whole.toString() + '.00'
-      : `${whole}.${fraction.toString().padStart(18, '0').slice(0, 2)}`
+      : `${whole}.${fraction.toString().padStart(6, '0').slice(0, 2)}`
 
     return NextResponse.json({ balance: formatted })
   } catch {

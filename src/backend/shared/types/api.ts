@@ -1,5 +1,6 @@
 import type { Agent, CreateAgentInput } from "./agent";
 import type { AgentPerformanceSnapshot } from "./performance";
+import type { MarketSnapshot } from "../../markets/market.types";
 import type { Follow, Position } from "./position";
 import type { ReasoningTrace, TraceStatus } from "./trace";
 
@@ -26,6 +27,7 @@ export interface RunAgentRequest {
   context?: {
     price?: number;
     headlines?: string[];
+    marketSnapshot?: MarketSnapshot;
     marketData?: Record<string, unknown>;
   };
 }
@@ -55,6 +57,7 @@ export interface PublishTraceResponse {
   traceId: string;
   ipfsCid?: string;
   irysId?: string;
+  txHash?: string;
   status: TraceStatus;
 }
 
@@ -65,6 +68,46 @@ export interface ListPositionsQuery {
 
 export interface ListPositionsResponse {
   positions: Position[];
+}
+
+export interface GetMarketSnapshotResponse {
+  snapshot: MarketSnapshot | null;
+}
+
+export interface CctpQuoteRequest {
+  fromChainId: number;
+  toChainId: number;
+  amount: string;
+  recipient: string;
+  tokenAddress?: string;
+  walletId?: string;
+}
+
+export interface CctpQuoteResponse {
+  configured: boolean;
+  message: string;
+  quoteId?: string;
+}
+
+export interface CctpTransferRequest extends CctpQuoteRequest {
+  quoteId?: string;
+}
+
+export interface CctpTransferResponse {
+  configured: boolean;
+  message: string;
+  transferId?: string;
+  status?: 'queued' | 'submitted' | 'pending';
+}
+
+export interface PaymentChallenge {
+  protocol: 'x402';
+  resource: string;
+  amount: string;
+  asset: 'USDC';
+  network: string;
+  payTo: string;
+  description: string;
 }
 
 export interface FollowPositionRequest {

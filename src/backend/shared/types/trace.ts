@@ -1,9 +1,10 @@
 import type { ISODateTime, UUID } from "./common";
 
-export type TraceStatus = "draft" | "stored" | "pinned" | "failed";
+export type TraceStatus = "draft" | "stored" | "publishing" | "published" | "pinned" | "failed";
 export type PositionSide = "long" | "short" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type TimeHorizon = "intraday" | "swing" | "long-term";
+export type VerdictAction = "follow" | "fade" | "watch" | "avoid";
 
 export interface ReasoningStep {
   order: number;
@@ -21,6 +22,15 @@ export interface PositionIntent {
   timeHorizon: TimeHorizon;
 }
 
+export interface StructuredVerdict {
+  action: VerdictAction;
+  summary: string;
+  confidence: ConfidenceLevel;
+  score: number;
+  primaryDrivers: string[];
+  invalidation: string[];
+}
+
 export interface ReasoningTrace {
   id: UUID;
   agentId: UUID;
@@ -33,10 +43,13 @@ export interface ReasoningTrace {
   catalysts: string[];
   confidence: ConfidenceLevel;
   positionIntent: PositionIntent;
+  verdict?: StructuredVerdict;
   rawModelOutput?: string;
   status: TraceStatus;
   ipfsCid?: string;
   irysId?: string;
+  txHash?: string;
+  premium?: boolean;
   createdAt: ISODateTime;
   publishedAt?: ISODateTime;
 }
@@ -56,4 +69,5 @@ export interface PublishedTracePayload {
   catalysts: string[];
   confidence: ConfidenceLevel;
   positionIntent: PositionIntent;
+  verdict?: StructuredVerdict;
 }

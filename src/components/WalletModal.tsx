@@ -101,7 +101,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
                 <div style={{
                   fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
                   letterSpacing: '0.04em',
-                }}>Developer-controlled - Agent-linked</div>
+                }}>User-controlled - Social login</div>
               </div>
               <div style={{
                 fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--violet)',

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
+import { getMarketSnapshot, listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
 import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
 import type { ConfidenceLevel } from '@/backend/shared/types/trace'
@@ -42,7 +42,7 @@ function RunModal({
   const [headlines, setHeadlines] = useState('')
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState<string | null>(null)
-  const [phase, setPhase]         = useState<'idle' | 'calling' | 'reasoning' | 'storing'>('idle')
+  const [phase, setPhase]         = useState<'idle' | 'market' | 'reasoning' | 'storing'>('idle')
 
   async function handleRun() {
     if (!market.trim() || !asset.trim()) {
@@ -51,29 +51,26 @@ function RunModal({
     }
     setError(null)
     setLoading(true)
-    setPhase('calling')
-
-    // Simulate visible reasoning phases for UX
-    const phaseTimer1 = setTimeout(() => setPhase('reasoning'), 1200)
-    const phaseTimer2 = setTimeout(() => setPhase('storing'), 4500)
+    setPhase('market')
 
     try {
+      const symbol = asset.trim().toUpperCase()
+      const snapshot = await getMarketSnapshot(symbol).catch(() => null)
+      setPhase('reasoning')
       const result = await runAgent(agentId, {
         market: market.trim(),
-        assetSymbol: asset.trim().toUpperCase(),
+        assetSymbol: symbol,
         context: {
-          price: price ? parseFloat(price) : undefined,
+          price: price ? parseFloat(price) : snapshot?.price,
+          marketSnapshot: snapshot ?? undefined,
           headlines: headlines
             ? headlines.split('\n').map(h => h.trim()).filter(Boolean)
             : undefined,
         },
       })
-      clearTimeout(phaseTimer1)
-      clearTimeout(phaseTimer2)
+      setPhase('storing')
       onSuccess(result.trace)
     } catch (err) {
-      clearTimeout(phaseTimer1)
-      clearTimeout(phaseTimer2)
       setPhase('idle')
       setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Unexpected error. Check the console.')
       console.error(err)
@@ -83,10 +80,10 @@ function RunModal({
   }
 
   const phaseLabels: Record<typeof phase, string> = {
-    idle:      'Run analysis →',
-    calling:   '◌ Initialising agent…',
-    reasoning: '◌ Agent is reasoning…',
-    storing:   '◌ Storing trace…',
+    idle: 'Run analysis ->',
+    market: 'Loading market data...',
+    reasoning: 'Agent is reasoning...',
+    storing: 'Storing trace...',
   }
 
   const iStyle: React.CSSProperties = {
@@ -140,9 +137,9 @@ function RunModal({
                 {phaseLabels[phase]}
               </div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                {phase === 'reasoning' && 'DeepSeek-R1 generating reasoning trace…'}
-                {phase === 'storing'   && 'Persisting to Arc testnet…'}
-                {phase === 'calling'   && 'Connecting to Groq pipeline…'}
+                {phase === 'market' && 'Fetching live Coinbase snapshot...'}
+                {phase === 'reasoning' && 'Groq is generating the structured verdict...'}
+                {phase === 'storing' && 'Persisting trace and position state...'}
               </div>
             </div>
           </div>
@@ -348,9 +345,9 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10,
             letterSpacing: '0.06em', textTransform: 'uppercase',
-            color: trace.status === 'pinned' ? 'var(--lime)' : 'var(--text-tertiary)',
+          color: trace.status === 'published' || trace.status === 'pinned' ? 'var(--lime)' : trace.status === 'publishing' ? 'var(--violet)' : 'var(--text-tertiary)',
           }}>
-            {trace.status === 'pinned' ? '✓ On Arc' : trace.status}
+            {trace.status === 'published' || trace.status === 'pinned' ? '✓ On Arc' : trace.status}
           </span>
 
           <span style={{
@@ -461,7 +458,7 @@ export default function DashboardPage() {
   const long    = traces.filter(t => t.positionIntent.side === 'long').length
   const short   = traces.filter(t => t.positionIntent.side === 'short').length
   const neutral = traces.filter(t => t.positionIntent.side === 'neutral').length
-  const onArc   = traces.filter(t => t.status === 'pinned').length
+  const onArc   = traces.filter(t => t.status === 'published' || t.status === 'pinned').length
 
   return (
     <>

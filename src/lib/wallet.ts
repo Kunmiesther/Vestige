@@ -1,12 +1,11 @@
 /**
  * Vestige wallet integration.
  *
- * Strategy: Circle developer-controlled wallets as primary.
- * Injected wallet (MetaMask etc.) as secondary / fallback.
+ * Strategy: Circle user-controlled wallets as primary.
+ * Injected wallet (MetaMask etc.) as secondary self-custody path.
  *
- * Circle developer-controlled wallets give the agent-linked identity
- * the hackathon judges want to see — each user gets a deterministic
- * wallet provisioned by the backend, tied to their session/identity.
+ * Circle social login gives the user a persistent Arc wallet identity
+ * without routing through the disabled legacy provisioning endpoint.
  *
  * The injected wallet path is kept for users who prefer self-custody.
  */
@@ -45,6 +44,16 @@ export interface WalletState {
   error: string | null
 }
 
+interface CircleSession {
+  userToken: string
+  encryptionKey: string
+  refreshToken?: string
+  userId: string
+  wallet?: { id: string; address: string; blockchain: string; state?: string }
+  deviceId?: string
+  updatedAt?: string
+}
+
 export interface WalletActions {
   connectCircle: () => Promise<void>
   connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<void>
@@ -53,28 +62,124 @@ export interface WalletActions {
   refreshBalance: () => Promise<void>
 }
 
-// ─── Circle developer-controlled wallet helpers ───────────────────────────────
+// ─── Circle user-controlled wallet helpers ───────────────────────────────
 
 /**
- * POST /api/wallets/provision
- * Backend creates or retrieves a Circle developer-controlled wallet for the user.
- * Returns { address, walletId }
+ * Runs Circle social login, executes the user-controlled wallet challenge,
+ * lists the resulting Arc wallet, and persists the Circle session locally.
  */
 export async function provisionCircleWallet(): Promise<{ address: string; walletId: string }> {
-  const res = await fetch('/api/wallets/provision', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ network: 'ARC-TESTNET' }),
-  })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(
-      (err as { error?: { message?: string } })?.error?.message ?? 'Failed to provision Circle wallet'
-    )
+  const restored = loadCircleSession()
+  if (restored?.wallet?.address) {
+    return { address: restored.wallet.address, walletId: restored.wallet.id }
   }
 
-  return res.json()
+  if (typeof window === 'undefined') {
+    throw new Error('Circle Google login is only available in the browser.')
+  }
+
+  const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
+  if (!appId || !googleClientId) {
+    throw new Error('Circle Google login is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and NEXT_PUBLIC_GOOGLE_CLIENT_ID.')
+  }
+
+  const { W3SSdk } = await import('@circle-fin/w3s-pw-web-sdk')
+  const { SocialLoginProvider, ChallengeStatus } = await import('@circle-fin/w3s-pw-web-sdk/dist/src/types')
+  const sdk = new W3SSdk({ appSettings: { appId } })
+  const deviceId = await sdk.getDeviceId()
+  const deviceRes = await fetch('/api/circle/createDeviceToken', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId }),
+  })
+
+  if (!deviceRes.ok) throw await walletApiError(deviceRes, 'Failed to create Circle device token')
+  const device = await deviceRes.json() as { deviceToken: string; deviceEncryptionKey: string }
+
+  const loginResult = await new Promise<{
+    userToken: string
+    encryptionKey: string
+    refreshToken: string
+    oAuthInfo?: { socialUserUUID?: string; socialUserInfo?: { email?: string } }
+  }>((resolve, reject) => {
+    const configuredSdk = new W3SSdk({
+      appSettings: { appId },
+      loginConfigs: {
+        google: {
+          clientId: googleClientId,
+          redirectUri: window.location.origin,
+          selectAccountPrompt: true,
+        },
+        deviceToken: device.deviceToken,
+        deviceEncryptionKey: device.deviceEncryptionKey,
+      },
+    }, (error, result) => {
+      if (error || !result) reject(new Error(error?.message ?? 'Circle Google login failed.'))
+      else resolve(result)
+    })
+
+    configuredSdk.performLogin(SocialLoginProvider.GOOGLE).catch(reject)
+  })
+
+  const initRes = await fetch('/api/circle/initializeUser', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userToken: loginResult.userToken,
+      accountType: 'SCA',
+    }),
+  })
+
+  if (!initRes.ok) throw await walletApiError(initRes, 'Failed to initialize Circle user wallet')
+  const initialized = await initRes.json() as { challengeId: string }
+
+  sdk.setAuthentication({
+    userToken: loginResult.userToken,
+    encryptionKey: loginResult.encryptionKey,
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    sdk.execute(initialized.challengeId, (error, result) => {
+      if (error) {
+        reject(new Error(error.message))
+        return
+      }
+      if (result?.status && result.status !== ChallengeStatus.COMPLETE) {
+        reject(new Error(`Circle wallet challenge ended with status ${result.status}.`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  const walletsRes = await fetch('/api/circle/listWallets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userToken: loginResult.userToken }),
+  })
+
+  if (!walletsRes.ok) throw await walletApiError(walletsRes, 'Failed to list Circle wallets')
+  const walletData = await walletsRes.json() as { wallets?: Array<{ id: string; address: string; blockchain: string; state?: string }> }
+  const wallet = walletData.wallets?.find(item => item.blockchain === 'ARC-TESTNET') ?? walletData.wallets?.[0]
+  if (!wallet?.address) throw new Error('Circle did not return an Arc wallet.')
+
+  const session: CircleSession = {
+    userToken: loginResult.userToken,
+    encryptionKey: loginResult.encryptionKey,
+    refreshToken: loginResult.refreshToken,
+    userId: loginResult.oAuthInfo?.socialUserUUID ?? loginResult.oAuthInfo?.socialUserInfo?.email ?? wallet.id,
+    wallet,
+    deviceId,
+  }
+
+  persistCircleSession(session)
+  return { address: wallet.address, walletId: wallet.id }
+}
+
+export async function getPersistedCircleWallet(): Promise<{ address: string; walletId: string } | null> {
+  const restored = loadCircleSession()
+  return restored?.wallet?.address ? { address: restored.wallet.address, walletId: restored.wallet.id } : null
 }
 
 /**
@@ -82,6 +187,20 @@ export async function provisionCircleWallet(): Promise<{ address: string; wallet
  * Returns USDC balance for the wallet address on Arc testnet.
  */
 export async function fetchWalletBalance(address: string): Promise<string> {
+  const circleSession = loadCircleSession()
+  if (circleSession?.wallet?.address?.toLowerCase() === address.toLowerCase()) {
+    const res = await fetch('/api/circle/getTokenBalance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userToken: circleSession.userToken, walletId: circleSession.wallet.id }),
+    }).catch(() => null)
+    if (res?.ok) {
+      const data = await res.json() as { balances?: Array<{ symbol: string; amount: string }> }
+      const usdc = data.balances?.find(balance => balance.symbol === 'USDC')
+      if (usdc?.amount) return usdc.amount
+    }
+  }
+
   const res = await fetch(`/api/wallets/${address}/balance`)
   if (!res.ok) return '0.00'
   const data = await res.json() as { balance?: string }
@@ -179,6 +298,7 @@ export function onChainChanged(callback: (chainId: string) => void, connectorId?
 // ─── Session persistence ──────────────────────────────────────────────────────
 
 const SESSION_KEY = 'vestige_wallet'
+const CIRCLE_SESSION_KEY = 'vestige_circle_user_wallet'
 
 interface PersistedWallet {
   address: string
@@ -204,7 +324,28 @@ export function loadPersistedWallet(): PersistedWallet | null {
 export function clearPersistedWallet(): void {
   try {
     localStorage.removeItem(SESSION_KEY)
+    localStorage.removeItem(CIRCLE_SESSION_KEY)
   } catch {}
+}
+
+function persistCircleSession(session: CircleSession): void {
+  try {
+    localStorage.setItem(CIRCLE_SESSION_KEY, JSON.stringify({ ...session, updatedAt: new Date().toISOString() }))
+  } catch {}
+}
+
+export function loadCircleSession(): CircleSession | null {
+  try {
+    const raw = localStorage.getItem(CIRCLE_SESSION_KEY)
+    return raw ? JSON.parse(raw) as CircleSession : null
+  } catch {
+    return null
+  }
+}
+
+async function walletApiError(response: Response, fallback: string): Promise<Error> {
+  const body = await response.json().catch(() => ({}))
+  return new Error((body as { error?: { message?: string } }).error?.message ?? fallback)
 }
 
 export { ARC_TESTNET, truncateAddress }
