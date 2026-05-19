@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { getMarketSnapshot, listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
+import { useWallet } from '@/contexts/WalletContext'
+import { restoreWalletPortfolioState } from '@/lib/wallet'
 import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
 import type { ConfidenceLevel } from '@/backend/shared/types/trace'
@@ -35,6 +37,7 @@ function RunModal({
   onClose: () => void
   onSuccess: (trace: ReasoningTrace) => void
 }) {
+  const wallet = useWallet()
   const [agentId, setAgentId]     = useState(agents[0]?.id ?? '')
   const [market, setMarket]       = useState('')
   const [asset, setAsset]         = useState('')
@@ -56,6 +59,9 @@ function RunModal({
     try {
       const symbol = asset.trim().toUpperCase()
       const snapshot = await getMarketSnapshot(symbol).catch(() => null)
+      const portfolio = wallet.isConnected
+        ? await restoreWalletPortfolioState().catch(() => null)
+        : null
       setPhase('reasoning')
       const result = await runAgent(agentId, {
         market: market.trim(),
@@ -63,6 +69,17 @@ function RunModal({
         context: {
           price: price ? parseFloat(price) : snapshot?.price,
           marketSnapshot: snapshot ?? undefined,
+          marketData: {
+            wallet: wallet.address
+              ? {
+                  address: wallet.address,
+                  walletType: wallet.walletType,
+                  isOnArc: wallet.isOnArc,
+                  usdcBalance: wallet.balance,
+                }
+              : undefined,
+            portfolio,
+          },
           headlines: headlines
             ? headlines.split('\n').map(h => h.trim()).filter(Boolean)
             : undefined,

@@ -4,7 +4,7 @@ export type TraceStatus = "draft" | "stored" | "publishing" | "published" | "pin
 export type PositionSide = "long" | "short" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type TimeHorizon = "intraday" | "swing" | "long-term";
-export type VerdictAction = "follow" | "fade" | "watch" | "avoid";
+export type VerdictAction = "EXECUTE" | "RESTRUCTURE" | "KILL";
 
 export interface ReasoningStep {
   order: number;
@@ -49,6 +49,11 @@ export interface ReasoningTrace {
   ipfsCid?: string;
   irysId?: string;
   txHash?: string;
+  publisherAddress?: string;
+  publisherWalletType?: "circle" | "injected";
+  publisherWalletId?: string;
+  publishSignature?: string;
+  publishMessage?: string;
   premium?: boolean;
   createdAt: ISODateTime;
   publishedAt?: ISODateTime;
@@ -70,4 +75,9 @@ export interface PublishedTracePayload {
   confidence: ConfidenceLevel;
   positionIntent: PositionIntent;
   verdict?: StructuredVerdict;
+  publisherAddress?: string;
+  publisherWalletType?: "circle" | "injected";
+  publisherWalletId?: string;
+  publishSignature?: string;
+  publishMessage?: string;
 }

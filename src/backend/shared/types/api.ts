@@ -59,6 +59,11 @@ export interface PublishTraceResponse {
   irysId?: string;
   txHash?: string;
   status: TraceStatus;
+  publisherAddress?: string;
+  publisherWalletType?: 'circle' | 'injected';
+  publisherWalletId?: string;
+  publishSignature?: string;
+  publishMessage?: string;
 }
 
 export interface ListPositionsQuery {

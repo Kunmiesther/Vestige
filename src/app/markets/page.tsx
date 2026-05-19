@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { listTraces, ApiError } from '@/lib/api'
+import { getMarketSnapshot, listPositions, listTraces, syncPositions, ApiError, type MarketSnapshot, type Position } from '@/lib/api'
+import { useWallet } from '@/contexts/WalletContext'
+import { loadWalletWatchlist, saveWalletWatchlist } from '@/lib/wallet'
 import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
 import type { ReasoningTrace, ConfidenceLevel } from '@/backend/shared/types/trace'
 
@@ -26,16 +28,26 @@ function Skeleton() {
 }
 
 export default function MarketsPage() {
+  const wallet = useWallet()
   const [traces, setTraces] = useState<ReasoningTrace[]>([])
+  const [positions, setPositions] = useState<Position[]>([])
+  const [watchlist, setWatchlist] = useState<string[]>([])
+  const [watchSnapshots, setWatchSnapshots] = useState<MarketSnapshot[]>([])
+  const [watchInput, setWatchInput] = useState('')
   const [loading, setLoading] = useState(true)
+  const [watchLoading, setWatchLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<'newest' | 'conviction'>('newest')
 
   const fetch = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const { traces: d } = await listTraces({ limit: 100 })
+      const [{ traces: d }, synced] = await Promise.all([
+        listTraces({ limit: 100 }),
+        syncPositions().catch(() => null),
+      ])
       setTraces(d)
+      setPositions(synced ?? await listPositions({ isOpen: true }).catch(() => []))
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Failed to load markets.')
     } finally {
@@ -44,6 +56,47 @@ export default function MarketsPage() {
   }, [])
 
   useEffect(() => { fetch() }, [fetch])
+
+  useEffect(() => {
+    if (!wallet.address) {
+      setWatchlist([])
+      setWatchSnapshots([])
+      return
+    }
+    setWatchlist(loadWalletWatchlist(wallet.address))
+  }, [wallet.address])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSnapshots() {
+      if (watchlist.length === 0) {
+        setWatchSnapshots([])
+        return
+      }
+      setWatchLoading(true)
+      const snapshots = await Promise.all(
+        watchlist.map(symbol => getMarketSnapshot(symbol).catch(() => null)),
+      )
+      if (!cancelled) {
+        setWatchSnapshots(snapshots.filter((snapshot): snapshot is MarketSnapshot => Boolean(snapshot)))
+        setWatchLoading(false)
+      }
+    }
+    loadSnapshots()
+    return () => { cancelled = true }
+  }, [watchlist])
+
+  function addWatchSymbol() {
+    if (!wallet.address) return
+    const updated = saveWalletWatchlist(wallet.address, [...watchlist, watchInput])
+    setWatchlist(updated)
+    setWatchInput('')
+  }
+
+  function removeWatchSymbol(symbol: string) {
+    if (!wallet.address) return
+    setWatchlist(saveWalletWatchlist(wallet.address, watchlist.filter(item => item !== symbol)))
+  }
 
   const sorted = [...traces].sort((a, b) => {
     if (sort === 'conviction') {
@@ -56,6 +109,9 @@ export default function MarketsPage() {
   const long = traces.filter(t => t.positionIntent.side === 'long').length
   const short = traces.filter(t => t.positionIntent.side === 'short').length
   const neutral = traces.filter(t => t.positionIntent.side === 'neutral').length
+  const openExposure = positions.filter(position => position.isOpen)
+  const usdcBalance = Number.parseFloat(wallet.balance ?? '0') || 0
+  const concentration = openExposure.length > 0 ? Math.round((1 / openExposure.length) * 100) : 0
 
   return (
     <main style={{ padding: '48px 32px 100px', maxWidth: 1200, margin: '0 auto' }}>
@@ -91,6 +147,86 @@ export default function MarketsPage() {
       </div>
 
       {/* Sort */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1fr)',
+        gap: 16,
+        marginBottom: 24,
+      }} className="markets-live-grid">
+        <div className="card" style={{ padding: '18px 20px' }}>
+          <div className="mono-label" style={{ marginBottom: 12 }}>Wallet exposure</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 1, background: 'var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+            {[
+              { label: 'USDC', val: wallet.isConnected ? usdcBalance.toFixed(2) : 'Connect' },
+              { label: 'Open', val: String(openExposure.length) },
+              { label: 'Max conc.', val: openExposure.length ? `${concentration}%` : '0%' },
+            ].map(item => (
+              <div key={item.label} style={{ background: 'var(--bg-card)', padding: '12px 14px' }}>
+                <div className="mono-label" style={{ marginBottom: 4 }}>{item.label}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-primary)' }}>{item.val}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+            <div className="mono-label" style={{ marginBottom: 0 }}>Watchlist</div>
+            {watchLoading && <span className="mono-label" style={{ color: 'var(--violet)', marginBottom: 0 }}>Live</span>}
+          </div>
+          {wallet.address ? (
+            <>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input
+                  value={watchInput}
+                  onChange={e => setWatchInput(e.target.value.toUpperCase())}
+                  onKeyDown={e => { if (e.key === 'Enter') addWatchSymbol() }}
+                  placeholder="BTC"
+                  style={{
+                    flex: 1,
+                    background: 'rgba(5,5,7,0.8)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius)',
+                    padding: '8px 10px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: 'var(--text-primary)',
+                    outline: 'none',
+                  }}
+                />
+                <button onClick={addWatchSymbol} className="btn-ghost" style={{ padding: '8px 12px' }}>Add</button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {watchlist.length === 0 && (
+                  <div className="mono-label" style={{ color: 'var(--text-tertiary)', marginBottom: 0 }}>No tracked assets</div>
+                )}
+                {watchlist.map(symbol => {
+                  const snapshot = watchSnapshots.find(item => item.symbol === symbol)
+                  return (
+                    <div key={symbol} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)' }}>{symbol}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: snapshot?.change24hPercent && snapshot.change24hPercent < 0 ? 'var(--ember)' : 'var(--lime)' }}>
+                        {snapshot ? `$${snapshot.price.toLocaleString()} ${snapshot.change24hPercent ?? 0}%` : 'Loading'}
+                      </span>
+                      <button onClick={() => removeWatchSymbol(symbol)} style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-tertiary)',
+                        cursor: 'pointer',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10,
+                      }}>Remove</button>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          ) : (
+            <div className="mono-label" style={{ color: 'var(--text-tertiary)', marginBottom: 0 }}>Connect wallet to persist a watchlist</div>
+          )}
+        </div>
+      </div>
+
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16, gap: 6 }}>
         {(['newest','conviction'] as const).map(s => (
           <button key={s} onClick={() => setSort(s)} style={{
@@ -168,6 +304,7 @@ export default function MarketsPage() {
 
       <style>{`
         @media(max-width:768px){.hide-mobile{display:none!important}.show-mobile-block{display:block!important}}
+        @media(max-width:900px){.markets-live-grid{grid-template-columns:1fr!important}}
         .show-mobile-block{display:none}
       `}</style>
     </main>

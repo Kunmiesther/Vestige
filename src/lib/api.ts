@@ -21,6 +21,7 @@ import type {
   CctpTransferResponse,
   ApiErrorResponse,
 } from '@/backend/shared/types/api'
+import { signPublishAction } from '@/lib/wallet'
 
 // ─── Error class ────────────────────────────────────────────────────────────
 
@@ -128,7 +129,11 @@ export async function getTrace(traceId: string): Promise<ReasoningTrace> {
  * Triggers IPFS/Irys publication of a stored trace.
  */
 export async function publishTrace(traceId: string): Promise<ReasoningTrace> {
-  const data = await apiFetch<{ trace: ReasoningTrace }>(`/api/traces/${traceId}/publish`, { method: 'POST' })
+  const signedPublish = await signPublishAction(traceId)
+  const data = await apiFetch<{ trace: ReasoningTrace }>(`/api/traces/${traceId}/publish`, {
+    method: 'POST',
+    body: JSON.stringify(signedPublish),
+  })
   return data.trace
 }
 
@@ -147,6 +152,11 @@ export async function listPositions(params?: {
 
   const query = qs.toString() ? `?${qs.toString()}` : ''
   const data = await apiFetch<{ positions: Position[] }>(`/api/positions${query}`)
+  return data.positions
+}
+
+export async function syncPositions(): Promise<Position[]> {
+  const data = await apiFetch<{ positions: Position[] }>('/api/positions', { method: 'POST' })
   return data.positions
 }
 

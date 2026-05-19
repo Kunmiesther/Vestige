@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { ARC_TESTNET } from '@/lib/arc'
 
 const DEFAULT_CIRCLE_BASE_URL = 'https://api.circle.com/v1/w3s'
+const USER_ALREADY_INITIALIZED_CODE = 155106
 
 export interface CircleWalletSession {
   userToken: string
@@ -27,9 +28,9 @@ export interface CircleTokenBalance {
 
 function circleConfig() {
   const apiKey = process.env.CIRCLE_API_KEY
-  const baseUrl = process.env.NEXT_PUBLIC_CIRCLE_BASE_URL ?? DEFAULT_CIRCLE_BASE_URL
+  const baseUrl = normalizeCircleBaseUrl(process.env.NEXT_PUBLIC_CIRCLE_BASE_URL ?? DEFAULT_CIRCLE_BASE_URL)
   if (!apiKey) throw new Error('Missing CIRCLE_API_KEY.')
-  return { apiKey, baseUrl: baseUrl.replace(/\/$/, '') }
+  return { apiKey, baseUrl }
 }
 
 async function circleFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -45,8 +46,11 @@ async function circleFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const message = body?.message ?? body?.error?.message ?? `Circle request failed (${response.status}).`
-    throw new Error(message)
+    const message = circleErrorMessage(body, response.status)
+    const error = new Error(message) as Error & { status?: number; circleCode?: number | string }
+    error.status = response.status
+    error.circleCode = circleErrorCode(body)
+    throw error
   }
   return body as T
 }
@@ -67,22 +71,30 @@ export async function createDeviceToken(deviceId: string): Promise<{ deviceToken
 export async function initializeUser(input: {
   userToken: string
   accountType?: 'EOA' | 'SCA'
-}): Promise<{ challengeId: string }> {
-  const body = await circleFetch<{ data?: { challengeId?: string } }>('/user/initialize', {
-    method: 'POST',
-    headers: {
-      'X-User-Token': input.userToken,
-    },
-    body: JSON.stringify({
-      idempotencyKey: randomUUID(),
-      accountType: input.accountType ?? 'SCA',
-      blockchains: ['ARC-TESTNET'],
-    }),
-  })
+}): Promise<{ challengeId?: string; alreadyInitialized?: boolean }> {
+  let body: { data?: { challengeId?: string } }
+  try {
+    body = await circleFetch<{ data?: { challengeId?: string } }>('/user/initialize', {
+      method: 'POST',
+      headers: {
+        'X-User-Token': input.userToken,
+      },
+      body: JSON.stringify({
+        idempotencyKey: randomUUID(),
+        accountType: input.accountType ?? 'SCA',
+        blockchains: ['ARC-TESTNET'],
+      }),
+    })
+  } catch (error) {
+    if (isUserAlreadyInitializedError(error)) {
+      return { alreadyInitialized: true }
+    }
+    throw error
+  }
 
   const challengeId = body.data?.challengeId
-  if (!challengeId) throw new Error('Circle did not return a wallet creation challenge.')
-  return { challengeId }
+  if (!challengeId) throw new Error('Circle did not return a wallet initialization challenge.')
+  return { challengeId, alreadyInitialized: false }
 }
 
 export async function listWallets(userToken: string): Promise<CircleWallet[]> {
@@ -104,7 +116,7 @@ export async function listWallets(userToken: string): Promise<CircleWallet[]> {
 }
 
 export async function getTokenBalance(userToken: string, walletId: string): Promise<CircleTokenBalance[]> {
-  const body = await circleFetch<{ data?: { tokenBalances?: Array<{ token?: { symbol?: string }; amount?: string }> } }>(
+  const body = await circleFetch<{ data?: { tokenBalances?: Array<{ token?: { id?: string; symbol?: string }; amount?: string }> } }>(
     `/wallets/${walletId}/balances`,
     {
       method: 'GET',
@@ -116,10 +128,36 @@ export async function getTokenBalance(userToken: string, walletId: string): Prom
 
   const balances = body.data?.tokenBalances ?? []
   return balances.map((balance) => ({
-    token: 'USDC',
+    token: balance.token?.id ?? balance.token?.symbol ?? ARC_TESTNET.currency,
     symbol: balance.token?.symbol ?? ARC_TESTNET.currency,
     amount: balance.amount ?? '0.00',
   }))
+}
+
+export async function createSignMessageChallenge(input: {
+  userToken: string
+  walletId: string
+  message: string
+}): Promise<{ challengeId: string }> {
+  if (!input.userToken) throw new Error('userToken is required.')
+  if (!input.walletId) throw new Error('walletId is required.')
+  if (!input.message) throw new Error('message is required.')
+
+  const body = await circleFetch<{ data?: { challengeId?: string } }>('/user/sign/message', {
+    method: 'POST',
+    headers: {
+      'X-User-Token': input.userToken,
+    },
+    body: JSON.stringify({
+      idempotencyKey: randomUUID(),
+      walletId: input.walletId,
+      message: input.message,
+    }),
+  })
+
+  const challengeId = body.data?.challengeId
+  if (!challengeId) throw new Error('Circle did not return a sign-message challenge.')
+  return { challengeId }
 }
 
 export async function getUserToken(userId: string): Promise<{ userToken: string; encryptionKey: string }> {
@@ -130,4 +168,53 @@ export async function getUserToken(userId: string): Promise<{ userToken: string;
 
   if (!body.data?.userToken || !body.data.encryptionKey) throw new Error('Circle did not return a user token.')
   return { userToken: body.data.userToken, encryptionKey: body.data.encryptionKey }
+}
+
+function circleErrorMessage(body: unknown, status: number): string {
+  if (isRecord(body)) {
+    const message = body.message
+    if (typeof message === 'string') return message
+
+    const error = body.error
+    if (isRecord(error)) {
+      if (typeof error.message === 'string') return error.message
+      if (typeof error.code === 'string') return error.code
+    }
+    if (typeof body.code === 'string') return body.code
+  }
+
+  return `Circle request failed (${status}).`
+}
+
+function normalizeCircleBaseUrl(value: string): string {
+  const trimmed = value.replace(/\/$/, '')
+  if (trimmed.endsWith('/v1/w3s')) return trimmed
+  if (trimmed.endsWith('/v1')) return `${trimmed}/w3s`
+  return `${trimmed}/v1/w3s`
+}
+
+function isUserAlreadyInitializedError(error: unknown): boolean {
+  const circleCode = (error as { circleCode?: number | string })?.circleCode
+  if (String(circleCode) === String(USER_ALREADY_INITIALIZED_CODE)) return true
+
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  return message.includes('already') && message.includes('initialized')
+}
+
+function circleErrorCode(body: unknown): number | string | undefined {
+  if (!isRecord(body)) return undefined
+  const topLevelCode = body.code
+  if (typeof topLevelCode === 'number' || typeof topLevelCode === 'string') return topLevelCode
+
+  const error = body.error
+  if (isRecord(error)) {
+    const code = error.code
+    if (typeof code === 'number' || typeof code === 'string') return code
+  }
+
+  return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object')
 }

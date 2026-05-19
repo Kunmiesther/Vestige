@@ -9,8 +9,11 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   provisionCircleWallet,
+  completePendingCircleLogin,
+  getPersistedCircleWallet,
   fetchWalletBalance,
   requestAccounts,
   getChainId,
@@ -20,6 +23,7 @@ import {
   persistWallet,
   loadPersistedWallet,
   clearPersistedWallet,
+  restoreWalletPortfolioState,
   type WalletState,
   type WalletType,
   type SelfCustodyConnectorId,
@@ -41,6 +45,7 @@ const WalletContext = createContext<WalletContextValue | null>(null)
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function WalletProvider({ children }: { children: ReactNode }) {
+  const router = useRouter()
   const [state, setState] = useState<WalletState>({
     address: null,
     walletType: null,
@@ -77,36 +82,104 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   // Restore persisted session on mount
   useEffect(() => {
-    const saved = loadPersistedWallet()
-    if (!saved) return
+    let cancelled = false
 
-    if (saved.walletType === 'circle') {
-      patch({
-        address: saved.address,
-        walletType: 'circle',
-        isConnected: true,
-        isOnArc: true,
-        chainId: ARC_TESTNET.chainId,
-      })
-      fetchWalletBalance(saved.address)
-        .then(balance => patch({ balance }))
-        .catch(() => {})
-    } else if (saved.walletType === 'injected') {
-      // Silently re-verify injected session
-      getChainId()
-        .then(chainId => {
+    async function restore() {
+      const saved = loadPersistedWallet()
+
+      try {
+        patch({ isConnecting: true, error: null })
+        const completed = await completePendingCircleLogin()
+        if (cancelled) return
+        if (completed) {
+          console.info('[vestige:wallet]', { step: 'circle-redirect-complete', address: completed.address })
+          const balance = await fetchWalletBalance(completed.address).catch(() => '0.00')
+          persistWallet(completed.address, 'circle')
+          await restoreWalletPortfolioState().catch(() => null)
           patch({
-            address: saved.address,
-            walletType: 'injected',
+            address: completed.address,
+            walletType: 'circle',
             isConnected: true,
-            chainId,
-            isOnArc: chainId === ARC_TESTNET.chainId,
+            isOnArc: true,
+            chainId: ARC_TESTNET.chainId,
+            balance,
+            isConnecting: false,
+            error: null,
           })
-          return fetchWalletBalance(saved.address)
+          const currentPath = window.location.pathname
+          if (currentPath === '/circle/callback' && completed.returnPath && completed.returnPath !== currentPath) {
+            router.replace(completed.returnPath)
+          }
+          return
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[vestige:wallet]', { step: 'circle-redirect-failed', error: err instanceof Error ? err.message : err })
+          patch({
+            isConnecting: false,
+            error: err instanceof Error ? err.message : 'Failed to complete Circle login',
+          })
+        }
+        return
+      }
+
+      if (!saved) {
+        if (!cancelled) patch({ isConnecting: false })
+        return
+      }
+
+      if (saved.walletType === 'circle') {
+        const restored = await getPersistedCircleWallet().catch((err) => {
+          console.error('[vestige:wallet]', { step: 'circle-session-restore-failed', error: err instanceof Error ? err.message : err })
+          return null
         })
-        .then(balance => patch({ balance }))
-        .catch(() => clearPersistedWallet())
+        if (cancelled) return
+        if (!restored) {
+          clearPersistedWallet()
+          patch({ isConnecting: false })
+          return
+        }
+
+        const balance = await fetchWalletBalance(restored.address).catch(() => '0.00')
+        persistWallet(restored.address, 'circle')
+        await restoreWalletPortfolioState().catch(() => null)
+        patch({
+          address: restored.address,
+          walletType: 'circle',
+          isConnected: true,
+          isOnArc: true,
+          chainId: ARC_TESTNET.chainId,
+          balance,
+          isConnecting: false,
+          error: null,
+        })
+      } else if (saved.walletType === 'injected') {
+        // Silently re-verify injected session
+        getChainId()
+          .then(chainId => {
+            if (cancelled) return null
+            patch({
+              address: saved.address,
+              walletType: 'injected',
+              isConnected: true,
+              chainId,
+              isOnArc: chainId === ARC_TESTNET.chainId,
+              isConnecting: false,
+            })
+            return fetchWalletBalance(saved.address)
+          })
+          .then(balance => {
+            if (!cancelled && balance) patch({ balance })
+          })
+          .catch(() => {
+            clearPersistedWallet()
+            if (!cancelled) patch({ isConnecting: false })
+          })
+      }
     }
+
+    restore()
+    return () => { cancelled = true }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Connect Circle ──────────────────────────────────────────────────────────
@@ -116,6 +189,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const { address } = await provisionCircleWallet()
       const balance = await fetchWalletBalance(address).catch(() => '0.00')
       persistWallet(address, 'circle')
+      await restoreWalletPortfolioState().catch(() => null)
       patch({
         address,
         walletType: 'circle',
@@ -150,6 +224,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       injectedConnectorRef.current = connectorId
       persistWallet(address, 'injected')
+      await restoreWalletPortfolioState().catch(() => null)
       patch({
         address,
         walletType: 'injected',

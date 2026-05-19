@@ -63,6 +63,16 @@ interface AgentContribution {
   evidence: string[];
 }
 
+const agentContributionSchema = z
+  .object({
+    stance: z.enum(["long", "short", "neutral"]),
+    confidence: z.enum(["low", "medium", "high"]),
+    observation: z.string().min(20),
+    inference: z.string().min(20),
+    evidence: z.array(z.string().min(1)).min(2).max(5),
+  })
+  .strict();
+
 const generatedTraceBodySchema = reasoningTraceSchema
   .pick({
     thesis: true,
@@ -190,14 +200,14 @@ export class DefaultAgentRunner implements AgentRunner {
           }),
         },
       ],
-    }).catch(() => synthesizeFallback(input, contributions));
+    }).catch(() => synthesizeFromContributions(input, contributions));
 
     const parsed = generatedTraceBodySchema.safeParse(generated);
     if (parsed.success) {
       return parsed.data;
     }
 
-    return synthesizeFallback(input, contributions);
+    return synthesizeFromContributions(input, contributions);
   }
 
   private async generateContribution(
@@ -213,7 +223,8 @@ export class DefaultAgentRunner implements AgentRunner {
           content: [
             profile.systemPrompt,
             "Return only JSON with keys: stance, confidence, observation, inference, evidence.",
-            "Be specific, concise, non-repetitive, and institutional.",
+            "Evidence must cite the supplied live market snapshot, wallet/portfolio context, headline context, or the absence of a required signal.",
+            "Be specific, concise, non-repetitive, risk-aware, and institutional.",
           ].join("\n"),
         },
         {
@@ -221,31 +232,26 @@ export class DefaultAgentRunner implements AgentRunner {
           content: buildUserPrompt(input),
         },
       ],
-    }).catch(() => null);
+    }).catch((error) => {
+      throw new VestigeError(
+        `${profile.name} failed to generate a live contribution: ${error instanceof Error ? error.message : "unknown error"}`,
+        "AGENT_GENERATION_FAILED",
+      );
+    });
 
-    if (generated && typeof generated === "object") {
-      const record = generated as Record<string, unknown>;
-      return {
-        agent: profile.name,
-        specialty: profile.specialty,
-        stance: asSide(record.stance),
-        confidence: asConfidence(record.confidence),
-        observation: asText(record.observation, fallbackObservation(profile, input)),
-        inference: asText(record.inference, fallbackInference(profile, input)),
-        evidence: Array.isArray(record.evidence)
-          ? record.evidence.filter((item): item is string => typeof item === "string").slice(0, 3)
-          : fallbackEvidence(profile, input),
-      };
+    const parsed = agentContributionSchema.safeParse(generated);
+    if (!parsed.success) {
+      throw new VestigeError(`${profile.name} returned an invalid structured contribution.`, "AGENT_OUTPUT_INVALID");
     }
 
     return {
       agent: profile.name,
       specialty: profile.specialty,
-      stance: fallbackStance(profile, input),
-      confidence: "medium",
-      observation: fallbackObservation(profile, input),
-      inference: fallbackInference(profile, input),
-      evidence: fallbackEvidence(profile, input),
+      stance: parsed.data.stance,
+      confidence: parsed.data.confidence,
+      observation: parsed.data.observation,
+      inference: parsed.data.inference,
+      evidence: parsed.data.evidence,
     };
   }
 }
@@ -277,7 +283,7 @@ function buildSynthesisPrompt(agent: Agent): string {
         timeHorizon: "intraday | swing | long-term",
       },
       verdict: {
-        action: "follow | fade | watch | avoid",
+        action: "EXECUTE | RESTRUCTURE | KILL",
         summary: "string",
         confidence: "low | medium | high",
         score: 0,
@@ -285,7 +291,8 @@ function buildSynthesisPrompt(agent: Agent): string {
         invalidation: ["string"],
       },
     }),
-    "Include 6 to 8 high-signal reasoning steps covering macro, sentiment, quant, DeFi risk, momentum, and final synthesis.",
+    "Include 6 to 8 high-signal reasoning steps covering macro, technical structure, sentiment, risk, catalysts, and final synthesis.",
+    "Use EXECUTE only when the setup is actionable with explicit invalidation. Use RESTRUCTURE when the thesis needs reduced size, delayed timing, or changed parameters. Use KILL when the setup should be rejected.",
     "The verdict must be a concise product-facing decision, not a trading guarantee.",
   ].join("\n");
 }
@@ -300,14 +307,17 @@ function buildUserPrompt(input: RunAgentRequest): string {
       positionIntent:
         "Use neutral if there is insufficient evidence. Use long or short only when the thesis supports a trade.",
       reasoningSteps: "Include 3 to 6 concise reasoning steps.",
+      evidence:
+        "Reference actual supplied market conditions, volatility, wallet exposure, portfolio concentration, catalysts, or explicit missing-data risks.",
     },
   });
 }
 
-function synthesizeFallback(input: RunAgentRequest, contributions: AgentContribution[]): GeneratedTraceBody {
+function synthesizeFromContributions(input: RunAgentRequest, contributions: AgentContribution[]): GeneratedTraceBody {
   const price = typeof input.context?.price === "number" ? input.context.price : undefined;
   const longVotes = contributions.filter((c) => c.stance === "long").length;
   const shortVotes = contributions.filter((c) => c.stance === "short").length;
+  const neutralVotes = contributions.length - longVotes - shortVotes;
   const side: ReasoningTrace["positionIntent"]["side"] =
     longVotes > shortVotes + 1 ? "long" : shortVotes > longVotes + 1 ? "short" : "neutral";
   const confidence: ReasoningTrace["confidence"] =
@@ -322,20 +332,13 @@ function synthesizeFallback(input: RunAgentRequest, contributions: AgentContribu
     stopLoss,
     timeHorizon: confidence === "high" ? "swing" : "intraday",
   };
-  const catalysts = [
-    "ETF or stablecoin liquidity impulse confirms risk appetite.",
-    "Clean breakout with rising spot volume and controlled funding.",
-    "Narrative acceleration without immediate leverage overheating.",
-    "Macro data softens enough to support duration and high-beta crypto exposure.",
-  ];
-  const risks = [
-    "Crowded positioning can turn a valid thesis into a liquidation event.",
-    "Weak spot depth or bridge/stablecoin stress would invalidate risk-on assumptions.",
-    "Volatility expansion without volume confirmation raises false-breakout risk.",
-    "Policy or dollar-strength shock can compress crypto beta quickly.",
-  ];
+  const catalysts = contributionLines(contributions.filter((item) => item.agent.includes("Catalyst") || item.agent.includes("Macro") || item.agent.includes("Sentiment")));
+  const risks = contributionLines(contributions.filter((item) => item.agent.includes("Risk") || item.confidence === "low" || item.stance === "neutral"));
+  const marketData = input.context?.marketSnapshot
+    ? `${input.assetSymbol.toUpperCase()} at ${input.context.marketSnapshot.price} ${input.context.marketSnapshot.quoteAsset} with ${input.context.marketSnapshot.change24hPercent ?? "unknown"}% 24h change from ${input.context.marketSnapshot.source}`
+    : `live ${input.assetSymbol.toUpperCase()} market context was requested but no snapshot was available`;
   const fallbackBody: GeneratedTraceBody = {
-    thesis: `${input.assetSymbol.toUpperCase()} is best treated as a ${side} / ${confidence}-conviction setup until fresh liquidity or volatility evidence breaks the current regime. The committee sees tradable signal, but the edge depends on disciplined execution rather than headline chasing.`,
+    thesis: `${input.assetSymbol.toUpperCase()} receives a ${side} committee bias with ${confidence} conviction after five independent live-agent reviews. Market input: ${marketData}. Vote split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral.`,
     reasoningSteps: [
       ...contributions.map((contribution, index) => ({
         order: index,
@@ -349,15 +352,11 @@ function synthesizeFallback(input: RunAgentRequest, contributions: AgentContribu
         title: "Committee synthesis",
         observation: `Consensus: ${longVotes} long, ${shortVotes} short, ${contributions.length - longVotes - shortVotes} neutral across five specialized agents.`,
         inference: `Positioning should remain ${side} with ${confidence} conviction; size should be reduced if volatility expands without confirmation from liquidity or market breadth.`,
-        evidence: [
-          "Bull case: liquidity improves, trend confirms, and narrative attention rotates into the asset.",
-          "Bear case: macro impulse tightens, leverage flushes, or breakout demand fails at resistance.",
-          "Execution bias: wait for confirmation near defined invalidation rather than chasing the first impulse.",
-        ],
+        evidence: contributions.flatMap((contribution) => contribution.evidence.slice(0, 1)).slice(0, 5),
       },
     ],
-    catalysts,
-    risks,
+    catalysts: catalysts.length > 0 ? catalysts : contributions.map((item) => `${item.agent}: ${item.inference}`).slice(0, 4),
+    risks: risks.length > 0 ? risks : contributions.filter((item) => item.agent.includes("Risk")).map((item) => `${item.agent}: ${item.inference}`).slice(0, 4),
     confidence,
     positionIntent,
   };
@@ -367,59 +366,26 @@ function synthesizeFallback(input: RunAgentRequest, contributions: AgentContribu
 
 function buildStructuredVerdict(generated: GeneratedTraceBody): ReasoningTrace["verdict"] {
   const side = generated.positionIntent.side;
-  const action = side === "long" ? "follow" : side === "short" ? "fade" : "watch";
   const confidenceScore = generated.confidence === "high" ? 82 : generated.confidence === "medium" ? 62 : 38;
   const riskPenalty = Math.min(generated.risks.length * 3, 18);
   const catalystBoost = Math.min(generated.catalysts.length * 2, 10);
+  const score = Math.max(0, Math.min(100, confidenceScore + catalystBoost - riskPenalty));
+  const action: NonNullable<ReasoningTrace["verdict"]>["action"] =
+    score >= 70 && side !== "neutral" ? "EXECUTE" : score < 40 || (side === "neutral" && generated.confidence === "low") ? "KILL" : "RESTRUCTURE";
 
   return {
     action,
-    summary: `${side.toUpperCase()} bias with ${generated.confidence} conviction over a ${generated.positionIntent.timeHorizon} horizon.`,
+    summary: `${action}: ${side.toUpperCase()} bias with ${generated.confidence} conviction over a ${generated.positionIntent.timeHorizon} horizon.`,
     confidence: generated.confidence,
-    score: Math.max(0, Math.min(100, confidenceScore + catalystBoost - riskPenalty)),
+    score,
     primaryDrivers: generated.catalysts.slice(0, 4),
     invalidation: generated.risks.slice(0, 4),
   };
 }
 
-function fallbackObservation(profile: VestigeAgentProfile, input: RunAgentRequest): string {
-  const symbol = input.assetSymbol.toUpperCase();
-  if (profile.slug.includes("macro")) return `${symbol} is trading inside a regime where dollar liquidity, ETF demand, and rate expectations dominate incremental beta.`;
-  if (profile.slug.includes("sentiment")) return `${symbol} attention is narrative-driven; crowd conviction matters as much as price because reflexivity can accelerate both breakouts and failures.`;
-  if (profile.slug.includes("quant")) return `${symbol} requires probability-weighted framing: the setup is only attractive if target distance exceeds stop distance after volatility adjustment.`;
-  if (profile.slug.includes("defi")) return `${symbol} downside is concentrated around liquidity gaps, leverage resets, stablecoin plumbing, and cross-venue contagion.`;
-  return `${symbol} momentum should be judged by trend acceptance, volume quality, and whether volatility expands in the direction of the break.`;
-}
-
-function fallbackInference(profile: VestigeAgentProfile, input: RunAgentRequest): string {
-  const symbol = input.assetSymbol.toUpperCase();
-  if (profile.slug.includes("macro")) return `Macro supports selective exposure only if liquidity remains constructive; otherwise ${symbol} should be faded into strength.`;
-  if (profile.slug.includes("sentiment")) return `The trade improves if attention is rising but not euphoric; crowded consensus would lower expected value.`;
-  if (profile.slug.includes("quant")) return `Risk/reward is acceptable only with tight invalidation and no chase after a one-standard-deviation move.`;
-  if (profile.slug.includes("defi")) return `The cleanest invalidation is a liquidity stress signal, not a small price drawdown.`;
-  return `Execution favors confirmation after a level reclaim or failed breakdown rather than passive exposure.`;
-}
-
-function fallbackEvidence(profile: VestigeAgentProfile, input: RunAgentRequest): string[] {
-  const headlines = input.context?.headlines?.slice(0, 2) ?? [];
-  return headlines.length > 0 ? headlines : [profile.specialty, "Live market context supplied to Vestige agent committee."];
-}
-
-function fallbackStance(profile: VestigeAgentProfile, input: RunAgentRequest): ReasoningTrace["positionIntent"]["side"] {
-  const price = input.context?.price;
-  if (!price) return profile.slug.includes("defi") ? "neutral" : "long";
-  if (profile.slug.includes("defi")) return "neutral";
-  return price > 0 ? "long" : "neutral";
-}
-
-function asSide(value: unknown): ReasoningTrace["positionIntent"]["side"] {
-  return value === "short" || value === "neutral" ? value : "long";
-}
-
-function asConfidence(value: unknown): ReasoningTrace["confidence"] {
-  return value === "low" || value === "high" ? value : "medium";
-}
-
-function asText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value : fallback;
+function contributionLines(contributions: AgentContribution[]): string[] {
+  return contributions
+    .map((contribution) => `${contribution.agent}: ${contribution.inference}`)
+    .filter((line, index, lines) => lines.indexOf(line) === index)
+    .slice(0, 4);
 }

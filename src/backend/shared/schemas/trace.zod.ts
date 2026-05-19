@@ -4,7 +4,7 @@ export const positionSideSchema = z.enum(["long", "short", "neutral"]);
 export const confidenceLevelSchema = z.enum(["low", "medium", "high"]);
 export const timeHorizonSchema = z.enum(["intraday", "swing", "long-term"]);
 export const traceStatusSchema = z.enum(["draft", "stored", "publishing", "published", "pinned", "failed"]);
-export const verdictActionSchema = z.enum(["follow", "fade", "watch", "avoid"]);
+export const verdictActionSchema = z.enum(["EXECUTE", "RESTRUCTURE", "KILL"]);
 
 export const reasoningStepSchema = z.object({
   order: z.number().int().nonnegative(),
@@ -49,6 +49,11 @@ export const reasoningTraceSchema = z.object({
   ipfsCid: z.string().optional(),
   irysId: z.string().optional(),
   txHash: z.string().optional(),
+  publisherAddress: z.string().optional(),
+  publisherWalletType: z.enum(["circle", "injected"]).optional(),
+  publisherWalletId: z.string().optional(),
+  publishSignature: z.string().optional(),
+  publishMessage: z.string().optional(),
   premium: z.boolean().optional(),
   createdAt: z.string(),
   publishedAt: z.string().optional(),

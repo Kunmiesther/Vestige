@@ -9,7 +9,14 @@ export async function POST(
 ): Promise<NextResponse<{ trace: ReasoningTrace } | { error: { code: string; message: string } }>> {
   try {
     const { traceId } = await params
-    const body = await request.json().catch(() => ({})) as { txHash?: string }
+    const body = await request.json().catch(() => ({})) as {
+      txHash?: string
+      publisherAddress?: string
+      publisherWalletType?: 'circle' | 'injected'
+      publisherWalletId?: string
+      signature?: string
+      message?: string
+    }
     const repository = createTraceRepository()
     const trace = await repository.findTrace(traceId)
 
@@ -25,7 +32,16 @@ export async function POST(
     }
 
     const publisher = createTracePublisher(repository)
-    return NextResponse.json({ trace: await publisher.publish(trace.id, { txHash: body.txHash }) })
+    return NextResponse.json({
+      trace: await publisher.publish(trace.id, {
+        txHash: body.txHash,
+        publisherAddress: body.publisherAddress,
+        publisherWalletType: body.publisherWalletType,
+        publisherWalletId: body.publisherWalletId,
+        signature: body.signature,
+        message: body.message,
+      }),
+    })
   } catch (error) {
     return NextResponse.json(
       {

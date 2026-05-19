@@ -5,7 +5,7 @@ export async function POST(): Promise<NextResponse> {
     {
       error: {
         code: 'LEGACY_WALLET_PROVISION_DISABLED',
-        message: 'Use the Circle user-controlled wallet flow at /api/circle/*.',
+        message: 'Use the Circle user-controlled wallet flow through /api/endpoints.',
       },
     },
     { status: 501 },

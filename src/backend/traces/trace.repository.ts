@@ -352,6 +352,11 @@ function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
     ipfsCid: optionalString(row.ipfs_cid),
     irysId: optionalString(row.irys_id),
     txHash: optionalString(row.tx_hash),
+    publisherAddress: optionalString(row.publisher_address),
+    publisherWalletType: asPublisherWalletType(row.publisher_wallet_type),
+    publisherWalletId: optionalString(row.publisher_wallet_id),
+    publishSignature: optionalString(row.publish_signature),
+    publishMessage: optionalString(row.publish_message),
     premium: asBoolean(row.premium),
     createdAt: asString(row.created_at),
     publishedAt: optionalString(row.published_at),
@@ -405,6 +410,11 @@ function toTraceRow(trace: ReasoningTrace): Record<string, unknown> {
     ipfs_cid: trace.ipfsCid,
     irys_id: trace.irysId,
     tx_hash: trace.txHash,
+    publisher_address: trace.publisherAddress,
+    publisher_wallet_type: trace.publisherWalletType,
+    publisher_wallet_id: trace.publisherWalletId,
+    publish_signature: trace.publishSignature,
+    publish_message: trace.publishMessage,
     premium: trace.premium,
     created_at: trace.createdAt,
     published_at: trace.publishedAt,
@@ -504,4 +514,8 @@ function asConfidence(value: unknown): ReasoningTrace["confidence"] {
 
 function asPositionSide(value: unknown): Position["side"] {
   return value === "short" || value === "neutral" ? value : "long";
+}
+
+function asPublisherWalletType(value: unknown): ReasoningTrace["publisherWalletType"] {
+  return value === "circle" || value === "injected" ? value : undefined;
 }

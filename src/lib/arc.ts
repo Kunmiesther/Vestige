@@ -6,10 +6,10 @@
 
 export const ARC_TESTNET = {
   chainId: 5042002,
-  chainIdHex: '0x4CE052' as const,
+  chainIdHex: '0x4CEF52' as const,
   name: 'Arc Testnet',
   currency: 'USDC',
-  decimals: 18,
+  decimals: 6,
   rpcUrl: process.env.NEXT_PUBLIC_ARC_RPC_URL ?? 'https://rpc.testnet.arc.network',
   explorerUrl: 'https://testnet.arcscan.app',
   faucetUrl: 'https://faucet.circle.com',
