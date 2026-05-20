@@ -26,6 +26,34 @@ export interface CircleTokenBalance {
   amount: string
 }
 
+export class CircleApiError extends Error {
+  status: number
+  statusText: string
+  circleCode?: number | string
+  body: unknown
+  url: string
+  method: string
+
+  constructor(input: {
+    message: string
+    status: number
+    statusText: string
+    circleCode?: number | string
+    body: unknown
+    url: string
+    method: string
+  }) {
+    super(input.message)
+    this.name = 'CircleApiError'
+    this.status = input.status
+    this.statusText = input.statusText
+    this.circleCode = input.circleCode
+    this.body = input.body
+    this.url = input.url
+    this.method = input.method
+  }
+}
+
 function circleConfig() {
   const apiKey = process.env.CIRCLE_API_KEY
   const baseUrl = normalizeCircleBaseUrl(process.env.NEXT_PUBLIC_CIRCLE_BASE_URL ?? DEFAULT_CIRCLE_BASE_URL)
@@ -33,9 +61,26 @@ function circleConfig() {
   return { apiKey, baseUrl }
 }
 
-async function circleFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function circleFetch<T>(path: string, init?: RequestInit & { debugLabel?: string }): Promise<T> {
   const { apiKey, baseUrl } = circleConfig()
-  const response = await fetch(`${baseUrl}${path}`, {
+  const url = `${baseUrl}${path}`
+  const method = init?.method ?? 'GET'
+  const requestBody = parseRequestBody(init?.body)
+
+  if (init?.debugLabel) {
+    console.info(`[Circle API:${init.debugLabel}] request`, {
+      method,
+      url,
+      headers: sanitizeHeaders({
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      }),
+      payload: sanitizePayload(requestBody),
+    })
+  }
+
+  const response = await fetch(url, {
     ...init,
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -44,13 +89,29 @@ async function circleFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   })
 
-  const body = await response.json().catch(() => ({}))
+  const body = await parseResponseBody(response)
+
+  if (init?.debugLabel) {
+    console.info(`[Circle API:${init.debugLabel}] response`, {
+      method,
+      url,
+      status: response.status,
+      statusText: response.statusText,
+      body,
+    })
+  }
+
   if (!response.ok) {
     const message = circleErrorMessage(body, response.status)
-    const error = new Error(message) as Error & { status?: number; circleCode?: number | string }
-    error.status = response.status
-    error.circleCode = circleErrorCode(body)
-    throw error
+    throw new CircleApiError({
+      message,
+      status: response.status,
+      statusText: response.statusText,
+      circleCode: circleErrorCode(body),
+      body,
+      url,
+      method,
+    })
   }
   return body as T
 }
@@ -66,6 +127,31 @@ export async function createDeviceToken(deviceId: string): Promise<{ deviceToken
     deviceToken: body.data?.deviceToken ?? '',
     deviceEncryptionKey: body.data?.deviceEncryptionKey ?? '',
   }
+}
+
+export async function createEmailOtpToken(input: {
+  email: string
+  deviceId?: string
+}): Promise<{ deviceToken: string; deviceEncryptionKey: string; otpToken: string }> {
+  const email = input.email.trim().toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Valid email is required.')
+
+  const body = await circleFetch<{ data?: { deviceToken?: string; deviceEncryptionKey?: string; otpToken?: string } }>('/users/email/token', {
+    method: 'POST',
+    debugLabel: 'createEmailOtpToken',
+    body: JSON.stringify({
+      idempotencyKey: randomUUID(),
+      email,
+      deviceId: input.deviceId,
+    }),
+  })
+
+  const deviceToken = body.data?.deviceToken
+  const deviceEncryptionKey = body.data?.deviceEncryptionKey
+  const otpToken = body.data?.otpToken
+  if (!deviceToken || !deviceEncryptionKey) throw new Error('Circle did not return valid email device credentials.')
+  if (!otpToken) throw new Error('Circle did not return an email OTP token.')
+  return { deviceToken, deviceEncryptionKey, otpToken }
 }
 
 export async function initializeUser(input: {
@@ -184,6 +270,69 @@ function circleErrorMessage(body: unknown, status: number): string {
   }
 
   return `Circle request failed (${status}).`
+}
+
+async function parseResponseBody(response: Response): Promise<unknown> {
+  const text = await response.text().catch(() => '')
+  if (!text) return {}
+
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return text
+  }
+}
+
+function parseRequestBody(body: BodyInit | null | undefined): unknown {
+  if (typeof body !== 'string') return undefined
+
+  try {
+    return JSON.parse(body) as unknown
+  } catch {
+    return body
+  }
+}
+
+function sanitizeHeaders(headers: HeadersInit): Record<string, string> {
+  const normalized: Record<string, string> = {}
+
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      normalized[key] = sanitizeHeaderValue(key, value)
+    })
+    return normalized
+  }
+
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      normalized[key] = sanitizeHeaderValue(key, value)
+    }
+    return normalized
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === 'string') normalized[key] = sanitizeHeaderValue(key, value)
+  }
+  return normalized
+}
+
+function sanitizeHeaderValue(key: string, value: string): string {
+  if (key.toLowerCase() === 'authorization') return 'Bearer [redacted]'
+  return value
+}
+
+function sanitizePayload(value: unknown): unknown {
+  if (!isRecord(value)) return value
+
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (key.toLowerCase().includes('key') && typeof entry === 'string') {
+      sanitized[key] = '[redacted]'
+    } else {
+      sanitized[key] = entry
+    }
+  }
+  return sanitized
 }
 
 function normalizeCircleBaseUrl(value: string): string {

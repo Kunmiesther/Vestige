@@ -12,6 +12,8 @@ import {
 import { useRouter } from 'next/navigation'
 import {
   provisionCircleWallet,
+  requestCircleEmailOtp,
+  verifyCircleEmailOtp,
   completePendingCircleLogin,
   getPersistedCircleWallet,
   fetchWalletBalance,
@@ -34,6 +36,8 @@ import { ARC_TESTNET } from '@/lib/arc'
 
 interface WalletContextValue extends WalletState {
   connectCircle: () => Promise<boolean>
+  requestCircleEmailOtp: (email: string) => Promise<boolean>
+  verifyCircleEmailOtp: () => Promise<boolean>
   connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<boolean>
   disconnect: () => void
   switchToArc: () => Promise<void>
@@ -210,6 +214,48 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const requestCircleOtp = useCallback(async (email: string) => {
+    patch({ isConnecting: true, error: null })
+    try {
+      await requestCircleEmailOtp(email)
+      patch({ isConnecting: false, error: null })
+      return true
+    } catch (err) {
+      patch({
+        isConnecting: false,
+        error: err instanceof Error ? err.message : 'Failed to send Circle verification email',
+      })
+      return false
+    }
+  }, [])
+
+  const verifyCircleOtp = useCallback(async () => {
+    patch({ isConnecting: true, error: null })
+    try {
+      const { address } = await verifyCircleEmailOtp()
+      const balance = await fetchWalletBalance(address).catch(() => '0.00')
+      persistWallet(address, 'circle')
+      await restoreWalletPortfolioState().catch(() => null)
+      patch({
+        address,
+        walletType: 'circle',
+        isConnected: true,
+        isOnArc: true,
+        chainId: ARC_TESTNET.chainId,
+        balance,
+        isConnecting: false,
+        error: null,
+      })
+      return true
+    } catch (err) {
+      patch({
+        isConnecting: false,
+        error: err instanceof Error ? err.message : 'Failed to verify Circle email',
+      })
+      return false
+    }
+  }, [])
+
   // ── Connect injected ────────────────────────────────────────────────────────
   const connectInjected = useCallback(async (connectorId: SelfCustodyConnectorId) => {
     patch({ isConnecting: true, error: null })
@@ -301,6 +347,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     <WalletContext.Provider value={{
       ...state,
       connectCircle,
+      requestCircleEmailOtp: requestCircleOtp,
+      verifyCircleEmailOtp: verifyCircleOtp,
       connectInjected,
       switchToArc,
       disconnect,

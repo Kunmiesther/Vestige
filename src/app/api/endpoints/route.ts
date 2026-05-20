@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import {
+  CircleApiError,
+  createEmailOtpToken,
   createSignMessageChallenge,
   createDeviceToken,
   getTokenBalance,
@@ -9,6 +11,7 @@ import {
 
 type CircleEndpointAction =
   | 'createDeviceToken'
+  | 'createEmailOtpToken'
   | 'initializeUser'
   | 'listWallets'
   | 'getTokenBalance'
@@ -17,6 +20,7 @@ type CircleEndpointAction =
 interface CircleEndpointRequest {
   action?: CircleEndpointAction
   deviceId?: string
+  email?: string
   userToken?: string
   accountType?: 'EOA' | 'SCA'
   walletId?: string
@@ -32,6 +36,15 @@ export async function POST(request: Request) {
         if (!body.deviceId) throw new Error('Missing Circle device id.')
         const device = await createDeviceToken(body.deviceId)
         return NextResponse.json({ action: body.action, ...device })
+      }
+
+      case 'createEmailOtpToken': {
+        if (!body.email) throw new Error('Missing Circle email.')
+        const otp = await createEmailOtpToken({
+          email: body.email,
+          deviceId: body.deviceId,
+        })
+        return NextResponse.json({ action: body.action, ...otp })
       }
 
       case 'initializeUser': {
@@ -76,6 +89,35 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Circle endpoint request failed.'
+    if (error instanceof CircleApiError) {
+      console.error('[Circle API route] upstream error', {
+        action: 'circle-endpoint',
+        method: error.method,
+        url: error.url,
+        status: error.status,
+        statusText: error.statusText,
+        circleCode: error.circleCode,
+        body: error.body,
+      })
+
+      return NextResponse.json(
+        {
+          error: {
+            code: 'CIRCLE_UPSTREAM_FAILED',
+            message,
+            upstream: {
+              status: error.status,
+              statusText: error.statusText,
+              circleCode: error.circleCode,
+              url: error.url,
+              body: error.body,
+            },
+          },
+        },
+        { status: error.status },
+      )
+    }
+
     const status = statusFromErrorMessage(message)
 
     return NextResponse.json(
