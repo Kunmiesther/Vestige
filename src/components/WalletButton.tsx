@@ -10,7 +10,19 @@ export function WalletButton() {
   const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect, refreshBalance } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [copied, setCopied] = useState(false)
   const modal = showModal ? <WalletModal onClose={() => setShowModal(false)} /> : null
+
+  async function copyAddress() {
+    if (!address) return
+    try {
+      await navigator.clipboard.writeText(address)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      setCopied(false)
+    }
+  }
 
   // Not connected
   if (!isConnected && !isConnecting) {
@@ -113,10 +125,53 @@ export function WalletButton() {
               <div className="mono-label" style={{ marginBottom: 4 }}>
                 {walletType === 'circle' ? 'Circle Wallet' : 'Browser Wallet'}
               </div>
-              <div style={{
-                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
-                wordBreak: 'break-all', lineHeight: 1.5,
-              }}>{address}</div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+                  wordBreak: 'break-all', lineHeight: 1.5, minWidth: 0, flex: 1,
+                }}>{address}</div>
+                {address && (
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void copyAddress()
+                    }}
+                    aria-label="Copy wallet address"
+                    title="Copy wallet address"
+                    style={{
+                      flexShrink: 0,
+                      background: copied ? 'var(--lime-dim)' : 'rgba(255,255,255,0.03)',
+                      border: copied ? '1px solid var(--lime-border)' : '1px solid var(--border)',
+                      borderRadius: 4,
+                      color: copied ? 'var(--lime)' : 'var(--text-tertiary)',
+                      cursor: 'pointer',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 9,
+                      letterSpacing: '0.06em',
+                      lineHeight: 1,
+                      padding: '6px 7px',
+                      textTransform: 'uppercase',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ position: 'relative', width: 10, height: 10, display: 'inline-block', flexShrink: 0 }}>
+                      <span style={{
+                        position: 'absolute', left: 1, top: 3, width: 6, height: 6,
+                        border: `1px solid ${copied ? 'var(--lime)' : 'var(--text-tertiary)'}`,
+                        borderRadius: 1,
+                      }} />
+                      <span style={{
+                        position: 'absolute', left: 3, top: 1, width: 6, height: 6,
+                        border: `1px solid ${copied ? 'var(--lime)' : 'var(--text-tertiary)'}`,
+                        borderRadius: 1, background: copied ? 'var(--lime-dim)' : 'var(--bg-card)',
+                      }} />
+                    </span>
+                    <span>{copied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Network */}

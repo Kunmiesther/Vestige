@@ -73,6 +73,23 @@ interface AgentContribution {
   recommendation: string;
 }
 
+interface CommitteeScoreMetrics {
+  score: number;
+  confidence: ReasoningTrace["confidence"];
+  action: NonNullable<ReasoningTrace["verdict"]>["action"];
+  agreement: number;
+  disagreement: number;
+  directionalConviction: number;
+  neutralPressure: number;
+  evidenceQuality: number;
+  catalystStrength: number;
+  uncertainty: number;
+  volatilityRisk: number;
+  riskAsymmetry: number;
+  confidenceConsistency: number;
+  sentimentDivergence: number;
+}
+
 const agentContributionSchema = z
   .object({
     stance: z.enum(["long", "short", "neutral"]),
@@ -121,6 +138,11 @@ export class DefaultAgentRunner implements AgentRunner {
     const enrichedInput = await this.enrichWithLiveMarketData(input);
     const generatedPayload = await this.generateTraceBody(agent, enrichedInput);
     const now = new Date().toISOString();
+    const verdict = generatedPayload.verdict;
+
+    if (!verdict) {
+      throw new VestigeError("Agent committee did not produce a structured verdict.", "AGENT_VERDICT_MISSING");
+    }
 
     const candidateTrace: ReasoningTrace = {
       id: randomUUID(),
@@ -134,7 +156,7 @@ export class DefaultAgentRunner implements AgentRunner {
       catalysts: generatedPayload.catalysts,
       confidence: generatedPayload.confidence,
       positionIntent: generatedPayload.positionIntent,
-      verdict: generatedPayload.verdict ?? buildStructuredVerdict(generatedPayload),
+      verdict,
       rawModelOutput: JSON.stringify(generatedPayload),
       status: "stored",
       createdAt: now,
@@ -226,7 +248,7 @@ export class DefaultAgentRunner implements AgentRunner {
 
     const parsed = generatedTraceBodySchema.safeParse(generated.parsed);
     if (parsed.success) {
-      return parsed.data;
+      return finalizeGeneratedTraceBody(parsed.data, contributions, input);
     }
 
     console.error("[vestige:agents:synthesis-validation-failed]", {
@@ -419,25 +441,10 @@ function buildSynthesisPrompt(agent: Agent): string {
       },
     }),
     "Include 6 to 8 high-signal reasoning steps covering macro, technical structure, sentiment, risk, catalysts, and final synthesis.",
+    "Preserve material disagreement. Do not smooth dissent into consensus; name which agent is blocking or weakening conviction.",
     "Use EXECUTE only when the setup is actionable with explicit invalidation. Use RESTRUCTURE when the thesis needs reduced size, delayed timing, or changed parameters. Use KILL when the setup should be rejected.",
     "The verdict must be a concise product-facing decision, not a trading guarantee.",
   ].join("\n");
-}
-
-function buildUserPrompt(input: RunAgentRequest): string {
-  return JSON.stringify({
-    task: "Generate a structured market reasoning trace for Vestige.",
-    market: input.market,
-    assetSymbol: input.assetSymbol,
-    context: input.context ?? {},
-    constraints: {
-      positionIntent:
-        "Use neutral if there is insufficient evidence. Use long or short only when the thesis supports a trade.",
-      reasoningSteps: "Include 3 to 6 concise reasoning steps.",
-      evidence:
-        "Reference actual supplied market conditions, volatility, wallet exposure, portfolio concentration, catalysts, or explicit missing-data risks.",
-    },
-  });
 }
 
 function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAgentRequest): string {
@@ -459,9 +466,31 @@ function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAge
       key_risks: "1-6 specific risks, including missing-data risks when relevant.",
       opportunities: "1-6 specific catalysts/opportunities/positive signals.",
       recommendation: "Concrete next action compatible with portfolio and trace verdict synthesis.",
+      specialization: agentSpecializationDirective(profile),
+      disagreement: "Do not force consensus. If your domain contradicts the apparent trade, state the contradiction directly.",
+      avoid_generic: "Avoid broad portfolio commentary unless your agent role specifically owns that risk.",
       json_only: "Return no markdown and no text outside the JSON object.",
     },
   });
+}
+
+function agentSpecializationDirective(profile: VestigeAgentProfile): string {
+  if (profile.slug === "macro-agent") {
+    return "Discuss liquidity, rates, dollar strength, ETF/treasury flows, monetary conditions, and cycle regime. Avoid CT sentiment and chart-level commentary unless it confirms macro pressure.";
+  }
+  if (profile.slug === "sentiment-agent") {
+    return "Discuss crowd positioning, CT/social tone, funding, fear/euphoria, attention, and narrative divergence. Avoid macro rates and support/resistance unless sentiment diverges from them.";
+  }
+  if (profile.slug === "technical-agent") {
+    return "Discuss structure, levels, momentum, support/resistance, volatility, invalidation, and execution only. Avoid narrative and macro claims.";
+  }
+  if (profile.slug === "risk-agent") {
+    return "Discuss downside, tail risk, volatility shock, liquidity collapse, liquidation cascades, correlation breakdowns, and operational/protocol risk. Be adversarial.";
+  }
+  if (profile.slug === "catalyst-agent") {
+    return "Discuss dated catalysts, unlocks, launches, upgrades, deadlines, event paths, and whether timing is actionable. Penalize vague narratives without a catalyst path.";
+  }
+  return profile.specialty;
 }
 
 function synthesizeFromContributions(input: RunAgentRequest, contributions: AgentContribution[]): GeneratedTraceBody {
@@ -512,26 +541,170 @@ function synthesizeFromContributions(input: RunAgentRequest, contributions: Agen
     positionIntent,
   };
 
-  return { ...fallbackBody, verdict: buildStructuredVerdict(fallbackBody) };
+  return finalizeGeneratedTraceBody(fallbackBody, contributions, input);
 }
 
-function buildStructuredVerdict(generated: GeneratedTraceBody): ReasoningTrace["verdict"] {
-  const side = generated.positionIntent.side;
-  const confidenceScore = generated.confidence === "high" ? 82 : generated.confidence === "medium" ? 62 : 38;
-  const riskPenalty = Math.min(generated.risks.length * 3, 18);
-  const catalystBoost = Math.min(generated.catalysts.length * 2, 10);
-  const score = Math.max(0, Math.min(100, confidenceScore + catalystBoost - riskPenalty));
-  const action: NonNullable<ReasoningTrace["verdict"]>["action"] =
-    score >= 70 && side !== "neutral" ? "EXECUTE" : score < 40 || (side === "neutral" && generated.confidence === "low") ? "KILL" : "RESTRUCTURE";
+function finalizeGeneratedTraceBody(
+  generated: GeneratedTraceBody,
+  contributions: AgentContribution[],
+  input: RunAgentRequest,
+): GeneratedTraceBody {
+  const metrics = computeCommitteeScore(generated, contributions, input);
+  return {
+    ...generated,
+    confidence: metrics.confidence,
+    verdict: buildStructuredVerdict(generated, contributions, input, metrics),
+  };
+}
+
+function buildStructuredVerdict(
+  generated: GeneratedTraceBody,
+  contributions: AgentContribution[],
+  input: RunAgentRequest,
+  existingMetrics?: CommitteeScoreMetrics,
+): ReasoningTrace["verdict"] {
+  const metrics = existingMetrics ?? computeCommitteeScore(generated, contributions, input);
+  return {
+    action: metrics.action,
+    summary: `${metrics.action}: ${generated.positionIntent.side.toUpperCase()} bias at ${metrics.score}/100 after ${Math.round(metrics.agreement * 100)}% agent alignment, ${Math.round(metrics.evidenceQuality * 100)}% evidence quality, and ${Math.round(metrics.riskAsymmetry * 100)}% risk drag.`,
+    confidence: metrics.confidence,
+    score: metrics.score,
+    primaryDrivers: buildPrimaryDrivers(generated, contributions, metrics),
+    invalidation: buildInvalidationDrivers(generated, contributions, metrics),
+  };
+}
+
+function computeCommitteeScore(
+  generated: GeneratedTraceBody,
+  contributions: AgentContribution[],
+  input: RunAgentRequest,
+): CommitteeScoreMetrics {
+  const count = Math.max(contributions.length, 1);
+  const stanceValues = contributions.map((item) => stanceValue(item.stance));
+  const stanceSum = stanceValues.reduce((sum, value) => sum + value, 0);
+  const longVotes = contributions.filter((item) => item.stance === "long").length;
+  const shortVotes = contributions.filter((item) => item.stance === "short").length;
+  const neutralVotes = contributions.filter((item) => item.stance === "neutral").length;
+  const agreement = Math.max(longVotes, shortVotes, neutralVotes) / count;
+  const disagreement = 1 - agreement;
+  const directionalConviction = Math.min(1, Math.abs(stanceSum) / count);
+  const neutralPressure = neutralVotes / count;
+  const confidenceValues = contributions.map((item) => confidenceValue(item.confidence));
+  const averageConfidence = confidenceValues.reduce((sum, value) => sum + value, 0) / count;
+  const confidenceConsistency = 1 - Math.min(1, standardDeviation(confidenceValues) / 0.33);
+  const evidenceQuality = average(contributions.map(contributionEvidenceQuality));
+  const catalystStrength = Math.min(1, (
+    generated.catalysts.length +
+    contributions.reduce((sum, item) => sum + item.opportunities.length, 0) +
+    (contributions.find((item) => item.agent.includes("Catalyst"))?.confidence === "high" ? 1 : 0)
+  ) / 10);
+  const uncertainty = Math.min(1, (
+    keywordDensity([...generated.risks, ...contributions.flatMap((item) => item.key_risks)], ["missing", "unknown", "uncertain", "insufficient", "thin", "unconfirmed", "mixed"]) +
+    contributions.filter((item) => item.confidence === "low").length / count +
+    disagreement * 0.6
+  ) / 2.2);
+  const volatilityRisk = marketVolatilityRisk(input);
+  const riskAsymmetry = Math.min(1, (
+    generated.risks.length / 8 +
+    contributions.reduce((sum, item) => sum + item.key_risks.length, 0) / 24 +
+    (contributions.find((item) => item.agent.includes("Risk"))?.verdict === "KILL" ? 0.25 : 0)
+  ) / 1.5);
+  const sentimentDivergence = sentimentDivergenceScore(contributions);
+  const lowEvidencePenalty = evidenceQuality < 0.35 ? 12 : evidenceQuality < 0.55 ? 6 : 0;
+  const verdictDrag = Math.min(1, contributions.filter((item) => item.verdict === "KILL").length / count);
+  const executeSupport = contributions.filter((item) => item.verdict === "EXECUTE").length / count;
+
+  const rawScore =
+    34 +
+    agreement * 10 +
+    directionalConviction * 20 +
+    averageConfidence * 12 +
+    confidenceConsistency * 7 +
+    evidenceQuality * 15 +
+    catalystStrength * 10 -
+    disagreement * 18 -
+    neutralPressure * 12 -
+    uncertainty * 16 -
+    volatilityRisk * 10 -
+    riskAsymmetry * 18 -
+    sentimentDivergence * 7 -
+    verdictDrag * 12 +
+    executeSupport * 6 -
+    lowEvidencePenalty;
+
+  const uncappedScore = Math.max(8, Math.min(94, Math.round(rawScore)));
+  const scoreCap = generated.positionIntent.side === "neutral" || neutralPressure >= 0.6
+    ? 46
+    : directionalConviction < 0.35
+      ? 58
+      : 94;
+  const score = Math.min(uncappedScore, scoreCap);
+  const action: CommitteeScoreMetrics["action"] =
+    score >= 72 &&
+    generated.positionIntent.side !== "neutral" &&
+    directionalConviction >= 0.45 &&
+    agreement >= 0.6 &&
+    riskAsymmetry < 0.7
+      ? "EXECUTE"
+      : score <= 40 || generated.positionIntent.side === "neutral" || neutralPressure >= 0.6
+        ? "KILL"
+        : "RESTRUCTURE";
+  const confidence: ReasoningTrace["confidence"] =
+    score >= 76 && disagreement < 0.35 && directionalConviction >= 0.55 && evidenceQuality >= 0.55
+      ? "high"
+      : score >= 50 && disagreement < 0.65 && directionalConviction >= 0.25 && evidenceQuality >= 0.35
+        ? "medium"
+        : "low";
 
   return {
-    action,
-    summary: `${action}: ${side.toUpperCase()} bias with ${generated.confidence} conviction over a ${generated.positionIntent.timeHorizon} horizon.`,
-    confidence: generated.confidence,
     score,
-    primaryDrivers: generated.catalysts.slice(0, 4),
-    invalidation: generated.risks.slice(0, 4),
+    confidence,
+    action,
+    agreement,
+    disagreement,
+    directionalConviction,
+    neutralPressure,
+    evidenceQuality,
+    catalystStrength,
+    uncertainty,
+    volatilityRisk,
+    riskAsymmetry,
+    confidenceConsistency,
+    sentimentDivergence,
   };
+}
+
+function buildPrimaryDrivers(
+  generated: GeneratedTraceBody,
+  contributions: AgentContribution[],
+  metrics: CommitteeScoreMetrics,
+): string[] {
+  return [
+    `Agent alignment: ${Math.round(metrics.agreement * 100)}%; directional conviction: ${Math.round(metrics.directionalConviction * 100)}%; confidence consistency: ${Math.round(metrics.confidenceConsistency * 100)}%.`,
+    `Evidence quality: ${Math.round(metrics.evidenceQuality * 100)}%; catalyst strength: ${Math.round(metrics.catalystStrength * 100)}%.`,
+    ...generated.catalysts,
+    ...contributions
+      .filter((item) => item.verdict === "EXECUTE" || item.confidence === "high")
+      .map((item) => `${item.agent}: ${item.recommendation}`),
+  ]
+    .filter((line, index, lines) => Boolean(line) && lines.indexOf(line) === index)
+    .slice(0, 4);
+}
+
+function buildInvalidationDrivers(
+  generated: GeneratedTraceBody,
+  contributions: AgentContribution[],
+  metrics: CommitteeScoreMetrics,
+): string[] {
+  return [
+    `Risk drag: ${Math.round(metrics.riskAsymmetry * 100)}%; uncertainty: ${Math.round(metrics.uncertainty * 100)}%; volatility pressure: ${Math.round(metrics.volatilityRisk * 100)}%; neutral pressure: ${Math.round(metrics.neutralPressure * 100)}%.`,
+    ...generated.risks,
+    ...contributions
+      .filter((item) => item.verdict === "KILL" || item.agent.includes("Risk"))
+      .flatMap((item) => item.key_risks.map((risk) => `${item.agent}: ${risk}`)),
+  ]
+    .filter((line, index, lines) => Boolean(line) && lines.indexOf(line) === index)
+    .slice(0, 4);
 }
 
 function contributionLines(contributions: AgentContribution[]): string[] {
@@ -539,6 +712,64 @@ function contributionLines(contributions: AgentContribution[]): string[] {
     .map((contribution) => `${contribution.agent}: ${contribution.inference}`)
     .filter((line, index, lines) => lines.indexOf(line) === index)
     .slice(0, 4);
+}
+
+function stanceValue(stance: ReasoningTrace["positionIntent"]["side"]): number {
+  if (stance === "long") return 1;
+  if (stance === "short") return -1;
+  return 0;
+}
+
+function confidenceValue(confidence: ReasoningTrace["confidence"]): number {
+  if (confidence === "high") return 1;
+  if (confidence === "medium") return 0.62;
+  return 0.28;
+}
+
+function contributionEvidenceQuality(contribution: AgentContribution): number {
+  const countScore = Math.min(1, contribution.evidence.length / 4);
+  const specificityScore = average(
+    contribution.evidence.map((item) => /(\d|%|\$|usdc|volume|price|support|resistance|funding|liquidity|deadline|unlock|upgrade|etf|rate|dollar)/i.test(item) ? 1 : 0.35),
+  );
+  const reasoningScore = contribution.reasoning.length > 180 ? 1 : contribution.reasoning.length > 80 ? 0.65 : 0.35;
+  return Math.min(1, countScore * 0.4 + specificityScore * 0.4 + reasoningScore * 0.2);
+}
+
+function sentimentDivergenceScore(contributions: AgentContribution[]): number {
+  const sentiment = contributions.find((item) => item.agent.includes("Sentiment"));
+  if (!sentiment) return 0;
+  const others = contributions.filter((item) => item !== sentiment);
+  if (others.length === 0) return 0;
+  const majority = Math.sign(others.reduce((sum, item) => sum + stanceValue(item.stance), 0));
+  if (majority === 0 || stanceValue(sentiment.stance) === 0) return 0.25;
+  return Math.sign(stanceValue(sentiment.stance)) === majority ? 0 : confidenceValue(sentiment.confidence);
+}
+
+function marketVolatilityRisk(input: RunAgentRequest): number {
+  const snapshot = input.context?.marketSnapshot;
+  if (!snapshot?.price) return 0.35;
+  const intradayRange = snapshot.high24h && snapshot.low24h
+    ? Math.abs(snapshot.high24h - snapshot.low24h) / snapshot.price
+    : 0;
+  const change = Math.abs(snapshot.change24hPercent ?? 0) / 100;
+  return Math.min(1, intradayRange * 4 + change * 2);
+}
+
+function keywordDensity(values: string[], keywords: string[]): number {
+  if (values.length === 0) return 0.5;
+  const matches = values.filter((value) => keywords.some((keyword) => value.toLowerCase().includes(keyword))).length;
+  return matches / values.length;
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function standardDeviation(values: number[]): number {
+  if (values.length <= 1) return 0;
+  const mean = average(values);
+  return Math.sqrt(average(values.map((value) => (value - mean) ** 2)));
 }
 
 function normalizeConfidence(value: unknown): ReasoningTrace["confidence"] {

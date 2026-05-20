@@ -149,6 +149,15 @@ interface CircleRuntime {
   ChallengeStatus: { COMPLETE: string }
 }
 
+type CircleDeploymentStatus = 'deployed' | 'undeployed' | 'unknown'
+
+interface CircleWalletReadiness {
+  walletState: string | null
+  deploymentStatus: CircleDeploymentStatus
+  stateRequiresInitialization: boolean
+  needsInitialization: boolean
+}
+
 export interface WalletActions {
   connectCircle: () => Promise<void>
   connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<void>
@@ -163,6 +172,15 @@ export interface PublishSignature {
   publisherWalletId?: string
   signature: string
   message: string
+}
+
+export type PublishStatusCallback = (message: string) => void
+
+class CircleWalletOperationError extends Error {
+  constructor(message: string, public readonly code?: number | string) {
+    super(message)
+    this.name = 'CircleWalletOperationError'
+  }
 }
 
 // ─── Circle user-controlled wallet helpers ───────────────────────────────
@@ -293,7 +311,7 @@ export async function restoreWalletPortfolioState(): Promise<WalletPortfolioStat
   })
 }
 
-export async function signPublishAction(traceId: string): Promise<PublishSignature> {
+export async function signPublishAction(traceId: string, onStatus?: PublishStatusCallback): Promise<PublishSignature> {
   const persisted = loadPersistedWallet()
   if (!persisted?.address || !persisted.walletType) {
     throw new Error('Connect a wallet before publishing to Arc.')
@@ -301,9 +319,10 @@ export async function signPublishAction(traceId: string): Promise<PublishSignatu
 
   const message = buildPublishMessage(traceId, persisted.address)
   if (persisted.walletType === 'circle') {
-    return signCirclePublishAction(persisted.address, message)
+    return signCirclePublishAction(persisted.address, message, onStatus)
   }
 
+  onStatus?.('Requesting wallet signature...')
   const provider = getProvider()
   if (!provider) throw new Error('No injected wallet is available to sign the publish action.')
   const signature = await provider.request({
@@ -498,12 +517,12 @@ function executeCircleChallenge(
       window.clearTimeout(timeout)
 
       if (error) {
-        reject(new Error(error.message ?? 'Circle wallet challenge failed.'))
+        reject(new CircleWalletOperationError(error.message ?? 'Circle wallet challenge failed.', error.code))
         return
       }
 
       if (result?.status && result.status !== runtime.ChallengeStatus.COMPLETE) {
-        reject(new Error(`Circle wallet challenge ended with status ${result.status}.`))
+        reject(new CircleWalletOperationError(`Circle wallet challenge ended with status ${result.status}.`))
         return
       }
 
@@ -512,46 +531,328 @@ function executeCircleChallenge(
   })
 }
 
-async function signCirclePublishAction(address: string, message: string): Promise<PublishSignature> {
+async function signCirclePublishAction(address: string, message: string, onStatus?: PublishStatusCallback): Promise<PublishSignature> {
   const session = loadCircleSession()
   if (!session?.userToken || !session.encryptionKey || !session.wallet?.id) {
     throw new Error('Circle wallet session is missing. Reconnect Circle before publishing.')
   }
 
+  try {
+    const runtime = await loadCircleRuntime()
+    const sdk = new runtime.W3SSdk({
+      appSettings: { appId: circleConfig().appId },
+      authentication: {
+        userToken: session.userToken,
+        encryptionKey: session.encryptionKey,
+      },
+    })
+    sdk.setAuthentication({
+      userToken: session.userToken,
+      encryptionKey: session.encryptionKey,
+    })
+
+    const preparedSession = await prepareCircleWalletForPublish(session, sdk, runtime, onStatus)
+    const { signature, session: signingSession } = await signCirclePublishMessageWithDeploymentRetry(
+      preparedSession,
+      sdk,
+      runtime,
+      message,
+      onStatus,
+    )
+
+    return {
+      publisherAddress: address,
+      publisherWalletType: 'circle',
+      publisherWalletId: signingSession.wallet.id,
+      signature,
+      message,
+    }
+  } catch (error) {
+    if (isUndeployedWalletError(error)) {
+      circleAuthLog('publish-sign:undeployed-wallet', { walletId: session.wallet.id })
+      throw new Error('Circle wallet initialization could not be completed automatically. Please retry publishing in a moment.')
+    }
+    throw sanitizeCirclePublishError(error)
+  }
+}
+
+async function prepareCircleWalletForPublish(
+  session: CircleSession,
+  sdk: CircleSdkInstance,
+  runtime: CircleRuntime,
+  onStatus?: PublishStatusCallback,
+): Promise<CircleSession> {
+  onStatus?.('Initializing wallet...')
+  const activeSession = await refreshCircleWalletSession(session, 'before-sign')
+  const readiness = await getCircleWalletReadiness(activeSession)
+  circleAuthLog('publish-wallet:readiness', {
+    walletId: activeSession.wallet?.id,
+    address: activeSession.wallet?.address,
+    walletState: readiness.walletState,
+    deploymentStatus: readiness.deploymentStatus,
+    needsInitialization: readiness.needsInitialization,
+  })
+
+  if (readiness.needsInitialization) {
+    onStatus?.('Deploying smart wallet...')
+    const initializedSession = await initializeCircleWalletForPublish(activeSession, sdk, runtime, onStatus)
+    onStatus?.('Wallet ready')
+    return waitForCircleWalletReady(initializedSession)
+  }
+
+  onStatus?.('Wallet ready')
+  return activeSession
+}
+
+async function signCirclePublishMessageWithDeploymentRetry(
+  session: CircleSession,
+  sdk: CircleSdkInstance,
+  runtime: CircleRuntime,
+  message: string,
+  onStatus?: PublishStatusCallback,
+): Promise<{ signature: string; session: CircleSession & { wallet: CircleWallet } }> {
+  let activeSession = session
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await signCirclePublishMessage(activeSession, sdk, runtime, message, onStatus)
+    } catch (error) {
+      lastError = error
+      if (!isUndeployedWalletError(error) || attempt === 2) break
+
+      circleAuthLog('publish-sign:undeployed-wallet-retry', {
+        walletId: activeSession.wallet?.id,
+        attempt,
+      })
+      onStatus?.('Deploying smart wallet...')
+      activeSession = await initializeCircleWalletForPublish(activeSession, sdk, runtime, onStatus)
+      activeSession = await waitForCircleWalletReady(activeSession)
+      onStatus?.('Wallet ready')
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Circle wallet signing failed.')
+}
+
+async function signCirclePublishMessage(
+  session: CircleSession,
+  sdk: CircleSdkInstance,
+  runtime: CircleRuntime,
+  message: string,
+  onStatus?: PublishStatusCallback,
+): Promise<{ signature: string; session: CircleSession & { wallet: CircleWallet } }> {
+  const signingSession = requireCircleWalletSession(session)
+  const challengeId = await createCircleSignMessageChallenge(signingSession, message, onStatus)
+
+  circleAuthLog('publish-sign:execute-start', { walletId: signingSession.wallet.id })
+  const result = await executeCircleChallenge(sdk, runtime, challengeId)
+  const signature = result?.data?.signature
+  if (!signature) throw new Error('Circle did not return a signature for the publish action.')
+  circleAuthLog('publish-sign:execute-complete', { walletId: signingSession.wallet.id })
+  onStatus?.('Wallet ready')
+
+  return { signature, session: signingSession }
+}
+
+async function createCircleSignMessageChallenge(
+  session: CircleSession,
+  message: string,
+  onStatus?: PublishStatusCallback,
+): Promise<string> {
+  if (!session.wallet?.id) {
+    throw new Error('Circle wallet session is missing a wallet id. Reconnect Circle before publishing.')
+  }
+
+  onStatus?.('Requesting wallet signature...')
   circleAuthLog('publish-sign:challenge-create-start', { walletId: session.wallet.id })
-  const { challengeId } = await circleEndpoint<{ challengeId: string }>('createSignMessageChallenge', {
+  const challenge = await circleEndpoint<{ challengeId: string }>('createSignMessageChallenge', {
     userToken: session.userToken,
     walletId: session.wallet.id,
     message,
   })
   circleAuthLog('publish-sign:challenge-create-complete', { walletId: session.wallet.id })
+  return challenge.challengeId
+}
 
-  const runtime = await loadCircleRuntime()
-  const sdk = new runtime.W3SSdk({
-    appSettings: { appId: circleConfig().appId },
-    authentication: {
-      userToken: session.userToken,
-      encryptionKey: session.encryptionKey,
-    },
-  })
-  sdk.setAuthentication({
+async function initializeCircleWalletForPublish(
+  session: CircleSession,
+  sdk: CircleSdkInstance,
+  runtime: CircleRuntime,
+  onStatus?: PublishStatusCallback,
+): Promise<CircleSession> {
+  onStatus?.('Deploying smart wallet...')
+  circleAuthLog('publish-wallet:initialize-start', { walletId: session.wallet?.id })
+  const initialized: { challengeId?: string; alreadyInitialized?: boolean } = await circleEndpoint<{ challengeId?: string; alreadyInitialized?: boolean }>('initializeUser', {
     userToken: session.userToken,
-    encryptionKey: session.encryptionKey,
+    accountType: 'SCA',
+  }).catch((error) => {
+    if (isAlreadyInitializedMessage(error)) return { alreadyInitialized: true }
+    throw error
   })
 
-  circleAuthLog('publish-sign:execute-start', { walletId: session.wallet.id })
-  const result = await executeCircleChallenge(sdk, runtime, challengeId)
-  const signature = result?.data?.signature
-  if (!signature) throw new Error('Circle did not return a signature for the publish action.')
-  circleAuthLog('publish-sign:execute-complete', { walletId: session.wallet.id })
+  if (initialized.challengeId) {
+    circleAuthLog('publish-wallet:initialize-challenge-start', { walletId: session.wallet?.id })
+    await executeCircleChallenge(sdk, runtime, initialized.challengeId)
+    circleAuthLog('publish-wallet:initialize-challenge-complete', { walletId: session.wallet?.id })
+  } else if (initialized.alreadyInitialized) {
+    circleAuthLog('publish-wallet:already-initialized', { walletId: session.wallet?.id })
+  }
+
+  return refreshCircleWalletSession(session, 'after-initialize')
+}
+
+function requireCircleWalletSession(session: CircleSession): CircleSession & { wallet: CircleWallet } {
+  if (!session.wallet?.id) {
+    throw new Error('Circle wallet session is missing a wallet id. Reconnect Circle before publishing.')
+  }
+  return session as CircleSession & { wallet: CircleWallet }
+}
+
+async function refreshCircleWalletSession(session: CircleSession, phase: string): Promise<CircleSession> {
+  const wallets = await listCircleWallets(session.userToken).catch((error) => {
+    circleAuthLog(`publish-wallet:list-${phase}-failed`, { message: error instanceof Error ? error.message : 'unknown' })
+    return []
+  })
+  const latestWallet = selectCircleWallet(wallets) ?? session.wallet
+  const activeSession = latestWallet?.address ? { ...session, wallet: latestWallet } : session
+  if (latestWallet?.address) persistCircleSession(activeSession)
+  return activeSession
+}
+
+async function waitForCircleWalletReady(session: CircleSession): Promise<CircleSession> {
+  let activeSession = session
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    activeSession = await refreshCircleWalletSession(activeSession, `ready-check-${attempt}`)
+    const readiness = await getCircleWalletReadiness(activeSession)
+    circleAuthLog('publish-wallet:ready-check', {
+      walletId: activeSession.wallet?.id,
+      attempt,
+      walletState: readiness.walletState,
+      deploymentStatus: readiness.deploymentStatus,
+      needsInitialization: readiness.needsInitialization,
+    })
+
+    if (!readiness.needsInitialization) return activeSession
+    await delay(700 * attempt)
+  }
+  return activeSession
+}
+
+async function getCircleWalletReadiness(session: CircleSession): Promise<CircleWalletReadiness> {
+  const wallet = session.wallet
+  if (!wallet?.id) {
+    return {
+      walletState: null,
+      deploymentStatus: 'unknown',
+      stateRequiresInitialization: true,
+      needsInitialization: true,
+    }
+  }
+
+  const walletState = wallet.state?.trim() || null
+  const stateRequiresInitialization = isCircleWalletLikelyUndeployed(wallet)
+  const stateDeploymentStatus = getCircleStateDeploymentStatus(wallet)
+  const chainDeploymentStatus = await getArcSmartWalletDeploymentStatus(wallet.address)
+  const deploymentStatus = mergeDeploymentStatus(stateDeploymentStatus, chainDeploymentStatus)
 
   return {
-    publisherAddress: address,
-    publisherWalletType: 'circle',
-    publisherWalletId: session.wallet.id,
-    signature,
-    message,
+    walletState,
+    deploymentStatus,
+    stateRequiresInitialization,
+    needsInitialization: stateRequiresInitialization || deploymentStatus === 'undeployed',
   }
+}
+
+function getCircleStateDeploymentStatus(wallet: CircleWallet): CircleDeploymentStatus {
+  const state = (wallet.state ?? '').toLowerCase()
+  if (!state) return 'unknown'
+  if (
+    state.includes('deployed') &&
+    !state.includes('undeployed') &&
+    !state.includes('uninitialized') &&
+    !state.includes('pending')
+  ) {
+    return 'deployed'
+  }
+  if (isCircleWalletLikelyUndeployed(wallet)) return 'undeployed'
+  return 'unknown'
+}
+
+function mergeDeploymentStatus(
+  stateStatus: CircleDeploymentStatus,
+  chainStatus: CircleDeploymentStatus,
+): CircleDeploymentStatus {
+  if (chainStatus === 'undeployed' || stateStatus === 'undeployed') return 'undeployed'
+  if (chainStatus === 'deployed' || stateStatus === 'deployed') return 'deployed'
+  return 'unknown'
+}
+
+async function getArcSmartWalletDeploymentStatus(address?: string): Promise<CircleDeploymentStatus> {
+  if (!address || !address.startsWith('0x')) return 'unknown'
+
+  try {
+    const response = await fetch(ARC_TESTNET.rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'eth_getCode',
+        params: [address, 'latest'],
+      }),
+    })
+    const body = await response.json().catch(() => ({})) as { result?: unknown; error?: { message?: string } }
+    if (!response.ok || body.error) {
+      throw new Error(body.error?.message ?? `Arc RPC returned ${response.status}.`)
+    }
+    if (typeof body.result !== 'string') return 'unknown'
+    return body.result === '0x' ? 'undeployed' : 'deployed'
+  } catch (error) {
+    circleAuthLog('publish-wallet:deployment-status-unknown', {
+      address,
+      message: error instanceof Error ? error.message : 'unknown',
+    })
+    return 'unknown'
+  }
+}
+
+function isCircleWalletLikelyUndeployed(wallet: CircleWallet): boolean {
+  const state = (wallet.state ?? '').toLowerCase()
+  return Boolean(state && (
+    state.includes('undeployed') ||
+    state.includes('uninitialized') ||
+    state.includes('pending') ||
+    state.includes('created') ||
+    state.includes('setup') ||
+    state.includes('initializ')
+  ))
+}
+
+function isUndeployedWalletError(error: unknown): boolean {
+  const code = error instanceof CircleWalletOperationError ? error.code : (error as { code?: number | string })?.code
+  if (String(code) === '155211') return true
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return (
+    message.includes('undeployed') ||
+    message.includes('uninitialized') ||
+    message.includes('wallet setup required') ||
+    message.includes('setup required') ||
+    message.includes('cannot generate a signature from an undeployed wallet')
+  )
+}
+
+function isAlreadyInitializedMessage(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  return message.includes('already') && message.includes('initialized')
+}
+
+function sanitizeCirclePublishError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : 'Circle wallet signing failed.'
+  if (message.toLowerCase().includes('circle') || message.toLowerCase().includes('challenge')) {
+    return new Error('Circle wallet signing could not be completed. Check that the wallet is initialized, then retry publishing.')
+  }
+  return error instanceof Error ? error : new Error('Wallet signing could not be completed.')
 }
 
 async function listCircleWallets(userToken: string): Promise<CircleWallet[]> {

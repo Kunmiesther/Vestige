@@ -128,12 +128,14 @@ export async function getTrace(traceId: string): Promise<ReasoningTrace> {
  * POST /api/traces/:traceId/publish
  * Triggers IPFS/Irys publication of a stored trace.
  */
-export async function publishTrace(traceId: string): Promise<ReasoningTrace> {
-  const signedPublish = await signPublishAction(traceId)
+export async function publishTrace(traceId: string, onStatus?: (message: string) => void): Promise<ReasoningTrace> {
+  const signedPublish = await signPublishAction(traceId, onStatus)
+  onStatus?.('Publishing to ARC...')
   const data = await apiFetch<{ trace: ReasoningTrace }>(`/api/traces/${traceId}/publish`, {
     method: 'POST',
     body: JSON.stringify(signedPublish),
   })
+  onStatus?.('Published')
   return data.trace
 }
 

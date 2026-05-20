@@ -99,6 +99,7 @@ export default function TraceDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [isPublishing, setIsPublishing] = useState(false)
+  const [publishStatus, setPublishStatus] = useState<string | null>(null)
 
   useEffect(() => {
     if (!traceId) return
@@ -113,13 +114,15 @@ export default function TraceDetailPage() {
     if (!trace || isPublishing) return
     setIsPublishing(true)
     setActionError(null)
+    setPublishStatus('Initializing wallet...')
     try {
-      const updated = await publishTrace(trace.id)
+      const updated = await publishTrace(trace.id, setPublishStatus)
       setTrace(updated)
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Failed to publish trace.')
     } finally {
       setIsPublishing(false)
+      window.setTimeout(() => setPublishStatus(null), 1400)
     }
   }
 
@@ -447,6 +450,14 @@ export default function TraceDetailPage() {
                 }}>{actionError}</div>
               )}
 
+              {publishStatus && (
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)',
+                  background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
+                  borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+                }}>{publishStatus}</div>
+              )}
+
               {(trace.status === 'stored' || trace.status === 'draft') && (
                 <button
                   onClick={handlePublish}
@@ -458,7 +469,7 @@ export default function TraceDetailPage() {
                     cursor: isPublishing ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  {isPublishing ? 'Publishing...' : 'Publish to Arc'}
+                  {isPublishing ? (publishStatus ?? 'Publishing...') : 'Publish to Arc'}
                 </button>
               )}
 
