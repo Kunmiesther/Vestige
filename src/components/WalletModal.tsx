@@ -13,32 +13,13 @@ interface WalletModalProps {
 export function WalletModal({ onClose }: WalletModalProps) {
   const {
     connectCircle,
-    requestCircleEmailOtp,
-    verifyCircleEmailOtp,
     connectInjected,
     isConnecting,
     error,
   } = useWallet()
   const [view, setView] = useState<'main' | 'self-custody'>('main')
-  const [emailStep, setEmailStep] = useState<'email' | 'otp'>('email')
-  const [email, setEmail] = useState('')
-  const [connecting, setConnecting] = useState<'email' | 'otp' | 'google' | SelfCustodyConnectorId | null>(null)
+  const [connecting, setConnecting] = useState<'google' | SelfCustodyConnectorId | null>(null)
   const [connectors, setConnectors] = useState(() => listSelfCustodyConnectors())
-
-  async function handleEmailSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setConnecting('email')
-    const sent = await requestCircleEmailOtp(email)
-    setConnecting(null)
-    if (sent) setEmailStep('otp')
-  }
-
-  async function handleOtpVerify() {
-    setConnecting('otp')
-    const connected = await verifyCircleEmailOtp()
-    setConnecting(null)
-    if (connected) onClose()
-  }
 
   async function handleGoogle() {
     setConnecting('google')
@@ -98,133 +79,12 @@ export function WalletModal({ onClose }: WalletModalProps) {
 
         {view === 'main' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <form onSubmit={handleEmailSubmit} style={{
-              width: '100%',
-              padding: '16px 18px',
-              background: connecting === 'email' || connecting === 'otp' ? 'rgba(179,136,255,0.12)' : 'var(--violet-dim)',
-              border: '1px solid var(--violet-border)',
-              borderRadius: 'var(--radius)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-              minHeight: 72,
-              boxSizing: 'border-box' as const,
-            }}>
-              <div>
-                <div style={{
-                  fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 600,
-                  letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--violet)',
-                  marginBottom: 3,
-                }}>
-                  {emailStep === 'otp' ? 'Verify email' : 'Circle Wallet'}
-                </div>
-                <div style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
-                  letterSpacing: '0.04em',
-                }}>
-                  {emailStep === 'otp' ? 'Enter the code in Circle verification' : 'User-controlled - Email OTP'}
-                </div>
-              </div>
-
-              {emailStep === 'email' ? (
-                <>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    disabled={isConnecting}
-                    placeholder="you@example.com"
-                    style={{
-                      width: '100%',
-                      background: 'rgba(5,5,7,0.8)',
-                      border: '1px solid var(--violet-border)',
-                      borderRadius: 'var(--radius)',
-                      padding: '10px 12px',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 12,
-                      color: 'var(--text-primary)',
-                      outline: 'none',
-                      boxSizing: 'border-box' as const,
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={isConnecting}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      background: 'rgba(179,136,255,0.18)',
-                      border: '1px solid var(--violet-border)',
-                      borderRadius: 'var(--radius)',
-                      cursor: isConnecting ? 'not-allowed' : 'pointer',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 10,
-                      color: 'var(--violet)',
-                      letterSpacing: '0.08em',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {connecting === 'email' ? 'Sending code...' : 'Continue with email'}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    color: 'var(--text-secondary)',
-                    lineHeight: 1.6,
-                    wordBreak: 'break-word',
-                  }}>
-                    {email}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleOtpVerify}
-                    disabled={isConnecting}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      background: 'rgba(179,136,255,0.18)',
-                      border: '1px solid var(--violet-border)',
-                      borderRadius: 'var(--radius)',
-                      cursor: isConnecting ? 'not-allowed' : 'pointer',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 10,
-                      color: 'var(--violet)',
-                      letterSpacing: '0.08em',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {connecting === 'otp' ? 'Verifying...' : 'Verify OTP'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEmailStep('email')}
-                    disabled={isConnecting}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: isConnecting ? 'not-allowed' : 'pointer',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 10,
-                      color: 'var(--text-tertiary)',
-                      letterSpacing: '0.06em',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    Change email
-                  </button>
-                </>
-              )}
-            </form>
-
             <button onClick={handleGoogle} disabled={isConnecting}
               style={{
                   width: '100%',
-                  padding: '14px 18px',
-                  background: 'transparent',
-                  border: '1px solid var(--border)',
+                  padding: '16px 18px',
+                  background: connecting === 'google' ? 'rgba(179,136,255,0.12)' : 'var(--violet-dim)',
+                  border: '1px solid var(--violet-border)',
                   borderRadius: 'var(--radius)',
                   cursor: isConnecting ? 'not-allowed' : 'pointer',
                   display: 'flex',
@@ -237,7 +97,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
               <div style={{ textAlign: 'left' }}>
                 <div style={{
                   fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 600,
-                  letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)',
+                  letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--violet)',
                   marginBottom: 3,
                 }}>
                   {connecting === 'google' ? 'Redirecting...' : 'Continue with Google'}
@@ -245,7 +105,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
                 <div style={{
                   fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
                   letterSpacing: '0.04em',
-                }}>Optional social login</div>
+                }}>Circle user-controlled wallet</div>
               </div>
               <div style={{
                 fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',

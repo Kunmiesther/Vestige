@@ -12,9 +12,8 @@ import {
 import { useRouter } from 'next/navigation'
 import {
   provisionCircleWallet,
-  requestCircleEmailOtp,
-  verifyCircleEmailOtp,
   completePendingCircleLogin,
+  hasPendingCircleLoginRecovery,
   getPersistedCircleWallet,
   fetchWalletBalance,
   requestAccounts,
@@ -27,17 +26,12 @@ import {
   clearPersistedWallet,
   restoreWalletPortfolioState,
   type WalletState,
-  type WalletType,
   type SelfCustodyConnectorId,
 } from '@/lib/wallet'
 import { ARC_TESTNET } from '@/lib/arc'
 
-// ─── Context shape ────────────────────────────────────────────────────────────
-
 interface WalletContextValue extends WalletState {
   connectCircle: () => Promise<boolean>
-  requestCircleEmailOtp: (email: string) => Promise<boolean>
-  verifyCircleEmailOtp: () => Promise<boolean>
   connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<boolean>
   disconnect: () => void
   switchToArc: () => Promise<void>
@@ -45,8 +39,6 @@ interface WalletContextValue extends WalletState {
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null)
-
-// ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
@@ -63,9 +55,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const cleanupRef = useRef<(() => void)[]>([])
   const injectedConnectorRef = useRef<SelfCustodyConnectorId | null>(null)
+  const stateRef = useRef(state)
 
   function patch(updates: Partial<WalletState>) {
     setState(prev => ({ ...prev, ...updates }))
+  }
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  function getStateSnapshot() {
+    return Promise.resolve(stateRef.current)
   }
 
   const refreshBalance = useCallback(async () => {
@@ -75,62 +76,58 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const balance = await fetchWalletBalance(s.address)
       patch({ balance })
     } catch {
-      // Non-critical — don't error the whole wallet state
+      // Balance refresh is non-critical for wallet connection state.
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Retrieve current state without closure staleness
-  const stateRef = useRef(state)
-  useEffect(() => { stateRef.current = state }, [state])
-  function getStateSnapshot() { return Promise.resolve(stateRef.current) }
-
-  // Restore persisted session on mount
   useEffect(() => {
     let cancelled = false
 
     async function restore() {
       const saved = loadPersistedWallet()
 
-      try {
-        patch({ isConnecting: true, error: null })
-        const completed = await completePendingCircleLogin()
-        if (cancelled) return
-        if (completed) {
-          console.info('[vestige:wallet]', { step: 'circle-redirect-complete', address: completed.address })
-          const balance = await fetchWalletBalance(completed.address).catch(() => '0.00')
-          persistWallet(completed.address, 'circle')
-          await restoreWalletPortfolioState().catch(() => null)
-          patch({
-            address: completed.address,
-            walletType: 'circle',
-            isConnected: true,
-            isOnArc: true,
-            chainId: ARC_TESTNET.chainId,
-            balance,
-            isConnecting: false,
-            error: null,
-          })
-          const currentPath = window.location.pathname
-          if (currentPath === '/circle/callback' && completed.returnPath && completed.returnPath !== currentPath) {
-            router.replace(completed.returnPath)
+      if (hasPendingCircleLoginRecovery()) {
+        try {
+          patch({ isConnecting: true, error: null })
+          const completed = await completePendingCircleLogin()
+          if (cancelled) return
+
+          if (completed) {
+            console.info('[vestige:wallet]', { step: 'circle-redirect-complete', address: completed.address })
+            const balance = await fetchWalletBalance(completed.address).catch(() => '0.00')
+            persistWallet(completed.address, 'circle')
+            await restoreWalletPortfolioState().catch(() => null)
+            patch({
+              address: completed.address,
+              walletType: 'circle',
+              isConnected: true,
+              isOnArc: true,
+              chainId: ARC_TESTNET.chainId,
+              balance,
+              isConnecting: false,
+              error: null,
+            })
+
+            if (completed.returnPath && completed.returnPath !== window.location.pathname) {
+              router.replace(completed.returnPath)
+            }
+            return
+          }
+        } catch (err) {
+          if (!cancelled) {
+            console.error('[vestige:wallet]', { step: 'circle-redirect-failed', error: err instanceof Error ? err.message : err })
+            patch({
+              isConnecting: false,
+              error: err instanceof Error ? err.message : 'Failed to complete Circle login',
+            })
           }
           return
         }
-      } catch (err) {
-        if (!cancelled) {
-          console.error('[vestige:wallet]', { step: 'circle-redirect-failed', error: err instanceof Error ? err.message : err })
-          patch({
-            isConnecting: false,
-            error: err instanceof Error ? err.message : 'Failed to complete Circle login',
-          })
-        }
-        return
       }
 
-      if (!saved) {
-        if (!cancelled) patch({ isConnecting: false })
-        return
-      }
+      if (!saved) return
+
+      patch({ isConnecting: true, error: null })
 
       if (saved.walletType === 'circle') {
         const restored = await getPersistedCircleWallet().catch((err) => {
@@ -138,6 +135,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           return null
         })
         if (cancelled) return
+
         if (!restored) {
           clearPersistedWallet()
           patch({ isConnecting: false })
@@ -157,8 +155,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           isConnecting: false,
           error: null,
         })
-      } else if (saved.walletType === 'injected') {
-        // Silently re-verify injected session
+        return
+      }
+
+      if (saved.walletType === 'injected') {
         getChainId()
           .then(chainId => {
             if (cancelled) return null
@@ -183,10 +183,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
 
     restore()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Connect Circle ──────────────────────────────────────────────────────────
   const connectCircle = useCallback(async () => {
     patch({ isConnecting: true, error: null })
     try {
@@ -214,49 +215,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const requestCircleOtp = useCallback(async (email: string) => {
-    patch({ isConnecting: true, error: null })
-    try {
-      await requestCircleEmailOtp(email)
-      patch({ isConnecting: false, error: null })
-      return true
-    } catch (err) {
-      patch({
-        isConnecting: false,
-        error: err instanceof Error ? err.message : 'Failed to send Circle verification email',
-      })
-      return false
-    }
-  }, [])
-
-  const verifyCircleOtp = useCallback(async () => {
-    patch({ isConnecting: true, error: null })
-    try {
-      const { address } = await verifyCircleEmailOtp()
-      const balance = await fetchWalletBalance(address).catch(() => '0.00')
-      persistWallet(address, 'circle')
-      await restoreWalletPortfolioState().catch(() => null)
-      patch({
-        address,
-        walletType: 'circle',
-        isConnected: true,
-        isOnArc: true,
-        chainId: ARC_TESTNET.chainId,
-        balance,
-        isConnecting: false,
-        error: null,
-      })
-      return true
-    } catch (err) {
-      patch({
-        isConnecting: false,
-        error: err instanceof Error ? err.message : 'Failed to verify Circle email',
-      })
-      return false
-    }
-  }, [])
-
-  // ── Connect injected ────────────────────────────────────────────────────────
   const connectInjected = useCallback(async (connectorId: SelfCustodyConnectorId) => {
     patch({ isConnecting: true, error: null })
     try {
@@ -282,7 +240,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         error: null,
       })
 
-      // Listen for account/chain changes
       const offAccounts = onAccountsChanged((accs) => {
         if (accs.length === 0) {
           clearPersistedWallet()
@@ -310,7 +267,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // ── Switch to Arc ───────────────────────────────────────────────────────────
   const switchToArc = useCallback(async () => {
     try {
       await switchToArcNetwork(injectedConnectorRef.current ?? undefined)
@@ -320,7 +276,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // ── Disconnect ──────────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
     clearPersistedWallet()
     injectedConnectorRef.current = null
@@ -338,17 +293,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  // Cleanup listeners on unmount
   useEffect(() => {
-    return () => { cleanupRef.current.forEach(fn => fn()) }
+    return () => {
+      cleanupRef.current.forEach(fn => fn())
+    }
   }, [])
 
   return (
     <WalletContext.Provider value={{
       ...state,
       connectCircle,
-      requestCircleEmailOtp: requestCircleOtp,
-      verifyCircleEmailOtp: verifyCircleOtp,
       connectInjected,
       switchToArc,
       disconnect,
@@ -358,8 +312,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     </WalletContext.Provider>
   )
 }
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useWallet(): WalletContextValue {
   const ctx = useContext(WalletContext)

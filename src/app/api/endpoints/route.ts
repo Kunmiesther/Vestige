@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import {
   CircleApiError,
-  createEmailOtpToken,
   createSignMessageChallenge,
   createDeviceToken,
   getTokenBalance,
@@ -11,7 +10,6 @@ import {
 
 type CircleEndpointAction =
   | 'createDeviceToken'
-  | 'createEmailOtpToken'
   | 'initializeUser'
   | 'listWallets'
   | 'getTokenBalance'
@@ -20,7 +18,6 @@ type CircleEndpointAction =
 interface CircleEndpointRequest {
   action?: CircleEndpointAction
   deviceId?: string
-  email?: string
   userToken?: string
   accountType?: 'EOA' | 'SCA'
   walletId?: string
@@ -36,15 +33,6 @@ export async function POST(request: Request) {
         if (!body.deviceId) throw new Error('Missing Circle device id.')
         const device = await createDeviceToken(body.deviceId)
         return NextResponse.json({ action: body.action, ...device })
-      }
-
-      case 'createEmailOtpToken': {
-        if (!body.email) throw new Error('Missing Circle email.')
-        const otp = await createEmailOtpToken({
-          email: body.email,
-          deviceId: body.deviceId,
-        })
-        return NextResponse.json({ action: body.action, ...otp })
       }
 
       case 'initializeUser': {

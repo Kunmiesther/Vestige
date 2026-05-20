@@ -61,24 +61,10 @@ function circleConfig() {
   return { apiKey, baseUrl }
 }
 
-async function circleFetch<T>(path: string, init?: RequestInit & { debugLabel?: string }): Promise<T> {
+async function circleFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const { apiKey, baseUrl } = circleConfig()
   const url = `${baseUrl}${path}`
   const method = init?.method ?? 'GET'
-  const requestBody = parseRequestBody(init?.body)
-
-  if (init?.debugLabel) {
-    console.info(`[Circle API:${init.debugLabel}] request`, {
-      method,
-      url,
-      headers: sanitizeHeaders({
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        ...init?.headers,
-      }),
-      payload: sanitizePayload(requestBody),
-    })
-  }
 
   const response = await fetch(url, {
     ...init,
@@ -90,16 +76,6 @@ async function circleFetch<T>(path: string, init?: RequestInit & { debugLabel?: 
   })
 
   const body = await parseResponseBody(response)
-
-  if (init?.debugLabel) {
-    console.info(`[Circle API:${init.debugLabel}] response`, {
-      method,
-      url,
-      status: response.status,
-      statusText: response.statusText,
-      body,
-    })
-  }
 
   if (!response.ok) {
     const message = circleErrorMessage(body, response.status)
@@ -127,31 +103,6 @@ export async function createDeviceToken(deviceId: string): Promise<{ deviceToken
     deviceToken: body.data?.deviceToken ?? '',
     deviceEncryptionKey: body.data?.deviceEncryptionKey ?? '',
   }
-}
-
-export async function createEmailOtpToken(input: {
-  email: string
-  deviceId?: string
-}): Promise<{ deviceToken: string; deviceEncryptionKey: string; otpToken: string }> {
-  const email = input.email.trim().toLowerCase()
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Valid email is required.')
-
-  const body = await circleFetch<{ data?: { deviceToken?: string; deviceEncryptionKey?: string; otpToken?: string } }>('/users/email/token', {
-    method: 'POST',
-    debugLabel: 'createEmailOtpToken',
-    body: JSON.stringify({
-      idempotencyKey: randomUUID(),
-      email,
-      deviceId: input.deviceId,
-    }),
-  })
-
-  const deviceToken = body.data?.deviceToken
-  const deviceEncryptionKey = body.data?.deviceEncryptionKey
-  const otpToken = body.data?.otpToken
-  if (!deviceToken || !deviceEncryptionKey) throw new Error('Circle did not return valid email device credentials.')
-  if (!otpToken) throw new Error('Circle did not return an email OTP token.')
-  return { deviceToken, deviceEncryptionKey, otpToken }
 }
 
 export async function initializeUser(input: {
@@ -281,58 +232,6 @@ async function parseResponseBody(response: Response): Promise<unknown> {
   } catch {
     return text
   }
-}
-
-function parseRequestBody(body: BodyInit | null | undefined): unknown {
-  if (typeof body !== 'string') return undefined
-
-  try {
-    return JSON.parse(body) as unknown
-  } catch {
-    return body
-  }
-}
-
-function sanitizeHeaders(headers: HeadersInit): Record<string, string> {
-  const normalized: Record<string, string> = {}
-
-  if (headers instanceof Headers) {
-    headers.forEach((value, key) => {
-      normalized[key] = sanitizeHeaderValue(key, value)
-    })
-    return normalized
-  }
-
-  if (Array.isArray(headers)) {
-    for (const [key, value] of headers) {
-      normalized[key] = sanitizeHeaderValue(key, value)
-    }
-    return normalized
-  }
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (typeof value === 'string') normalized[key] = sanitizeHeaderValue(key, value)
-  }
-  return normalized
-}
-
-function sanitizeHeaderValue(key: string, value: string): string {
-  if (key.toLowerCase() === 'authorization') return 'Bearer [redacted]'
-  return value
-}
-
-function sanitizePayload(value: unknown): unknown {
-  if (!isRecord(value)) return value
-
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, entry] of Object.entries(value)) {
-    if (key.toLowerCase().includes('key') && typeof entry === 'string') {
-      sanitized[key] = '[redacted]'
-    } else {
-      sanitized[key] = entry
-    }
-  }
-  return sanitized
 }
 
 function normalizeCircleBaseUrl(value: string): string {

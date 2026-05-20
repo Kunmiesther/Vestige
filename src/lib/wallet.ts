@@ -69,20 +69,16 @@ interface CircleSession {
   encryptionKey: string
   refreshToken?: string
   userId: string
-  email?: string
-  authProvider?: 'email' | 'google'
   wallet?: { id: string; address: string; blockchain: string; state?: string }
   deviceId?: string
   updatedAt?: string
 }
 
 interface CirclePendingLogin {
-  provider: 'google' | 'email'
-  email?: string
+  provider: 'google'
   deviceId: string
   deviceToken: string
   deviceEncryptionKey: string
-  otpToken?: string
   redirectUri: string
   returnPath: string
   startedAt: string
@@ -122,10 +118,8 @@ interface CircleChallengeResult {
 interface CircleSdkInstance {
   getDeviceId: () => Promise<string>
   performLogin: (provider: string) => Promise<void>
-  verifyOtp: () => void
   setAuthentication: (auth: { userToken: string; encryptionKey: string }) => void
   updateConfigs?: (configs?: CircleSdkConfigs, onLoginComplete?: CircleLoginCallback) => void
-  setOnResendOtpEmail?: (onResendOtpEmail: () => void) => void
   execute: (
     challengeId: string,
     onCompleted?: (error?: CircleSdkError, result?: CircleChallengeResult) => void,
@@ -143,7 +137,6 @@ interface CircleSdkConfigs {
     }
     deviceToken: string
     deviceEncryptionKey: string
-    otpToken?: string
   }
 }
 
@@ -158,8 +151,6 @@ interface CircleRuntime {
 
 export interface WalletActions {
   connectCircle: () => Promise<void>
-  requestCircleEmailOtp: (email: string) => Promise<void>
-  verifyCircleEmailOtp: () => Promise<void>
   connectInjected: (connectorId: SelfCustodyConnectorId) => Promise<void>
   disconnect: () => void
   switchToArc: () => Promise<void>
@@ -196,79 +187,6 @@ export async function provisionCircleWallet(): Promise<{ address: string; wallet
       reject(new Error('Circle Google login redirect did not complete. Check that the redirect URI matches the Google OAuth configuration.'))
     }, 15000)
   })
-}
-
-export async function requestCircleEmailOtp(email: string): Promise<void> {
-  const normalizedEmail = normalizeEmail(email)
-  circleAuthLog('email:start-requested', { email: redactEmail(normalizedEmail) })
-
-  const restored = await restoreCircleWalletSession()
-  if (restored) {
-    circleAuthLog('email:start-restored-existing-session', { address: restored.address })
-    return
-  }
-
-  const config = circleConfig({ requireGoogle: false })
-  const runtime = await loadCircleRuntime()
-  const bootstrapSdk = new runtime.W3SSdk({ appSettings: { appId: config.appId } })
-
-  circleAuthLog('email:device-id-start')
-  const deviceId = await bootstrapSdk.getDeviceId()
-  circleAuthLog('email:device-id-received')
-
-  circleAuthLog('email:otp-token-create-start', { email: redactEmail(normalizedEmail) })
-  const otp = await circleEndpoint<{ deviceToken: string; deviceEncryptionKey: string; otpToken: string }>('createEmailOtpToken', {
-    email: normalizedEmail,
-    deviceId,
-  })
-  if (!otp.deviceToken || !otp.deviceEncryptionKey) {
-    throw new Error('Circle did not return valid email device credentials.')
-  }
-  if (!otp.otpToken) throw new Error('Circle did not return an email OTP token.')
-
-  persistCirclePendingLogin({
-    provider: 'email',
-    email: normalizedEmail,
-    deviceId,
-    deviceToken: otp.deviceToken,
-    deviceEncryptionKey: otp.deviceEncryptionKey,
-    otpToken: otp.otpToken,
-    redirectUri: config.redirectUri,
-    returnPath: `${window.location.pathname}${window.location.search}${window.location.hash}`,
-    startedAt: new Date().toISOString(),
-  })
-  circleAuthLog('email:otp-sent', { email: redactEmail(normalizedEmail) })
-}
-
-export async function verifyCircleEmailOtp(): Promise<{ address: string; walletId: string }> {
-  const pending = loadCirclePendingLogin()
-  if (!pending || pending.provider !== 'email' || !pending.otpToken) {
-    throw new Error('Start email verification before entering the OTP.')
-  }
-
-  circleAuthLog('email:verify-start', { email: pending.email ? redactEmail(pending.email) : undefined })
-  const runtime = await loadCircleRuntime()
-  const config = circleConfig({ requireGoogle: false })
-  const { sdk, loginResult } = await waitForEmailOtpResult(runtime, config, pending)
-  circleAuthLog('email:verified', {
-    hasUserToken: Boolean(loginResult.userToken),
-    hasEncryptionKey: Boolean(loginResult.encryptionKey),
-  })
-
-  const wallet = await initializeCircleUserWallet(sdk, runtime, loginResult)
-  persistCircleSession({
-    userToken: loginResult.userToken,
-    encryptionKey: loginResult.encryptionKey,
-    refreshToken: loginResult.refreshToken,
-    userId: pending.email ?? wallet.id,
-    email: pending.email,
-    authProvider: 'email',
-    wallet,
-    deviceId: pending.deviceId,
-  })
-  clearCirclePendingLogin()
-  circleAuthLog('email:wallet-ready', { address: wallet.address, walletId: wallet.id })
-  return { address: wallet.address, walletId: wallet.id }
 }
 
 export async function getPersistedCircleWallet(): Promise<{ address: string; walletId: string } | null> {
@@ -314,6 +232,11 @@ export async function completePendingCircleLogin(): Promise<{ address: string; w
   circleAuthLog('redirect:wallet-ready', { address: wallet.address, walletId: wallet.id })
 
   return { address: wallet.address, walletId: wallet.id, returnPath: safeReturnPath(pending.returnPath) }
+}
+
+export function hasPendingCircleLoginRecovery(): boolean {
+  if (typeof window === 'undefined') return false
+  return Boolean(window.location.hash) && hasPendingCircleLogin()
 }
 
 /**
@@ -514,49 +437,6 @@ async function waitForSocialLoginResult(
   })
 }
 
-async function waitForEmailOtpResult(
-  runtime: CircleRuntime,
-  config: ReturnType<typeof circleConfig>,
-  pending: CirclePendingLogin,
-): Promise<{ sdk: CircleSdkInstance; loginResult: CircleLoginResult }> {
-  if (!pending.otpToken) throw new Error('Circle email OTP token is missing.')
-
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const timeout = window.setTimeout(() => {
-      if (settled) return
-      settled = true
-      reject(new Error('Circle email OTP verification timed out.'))
-    }, 180000)
-
-    const sdk = createConfiguredCircleSdk(runtime, config, pending, (error, result) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timeout)
-
-      if (error || !result) {
-        reject(new Error(error?.message ?? 'Circle email OTP verification failed.'))
-        return
-      }
-
-      if (!result.userToken || !result.encryptionKey) {
-        reject(new Error('Circle email OTP did not return a user token and encryption key.'))
-        return
-      }
-
-      resolve({ sdk, loginResult: result })
-    })
-
-    sdk.setOnResendOtpEmail?.(() => {
-      circleAuthLog('email:resend-requested', { email: pending.email ? redactEmail(pending.email) : undefined })
-      requestCircleEmailOtp(pending.email ?? '').catch((error) => {
-        circleAuthLog('email:resend-failed', { message: error instanceof Error ? error.message : 'unknown' })
-      })
-    })
-    sdk.verifyOtp()
-  })
-}
-
 async function initializeCircleUserWallet(
   sdk: CircleSdkInstance,
   runtime: CircleRuntime,
@@ -730,15 +610,12 @@ function circleSdkConfigs(
   const loginConfigs: CircleSdkConfigs['loginConfigs'] = {
     deviceToken: pending.deviceToken,
     deviceEncryptionKey: pending.deviceEncryptionKey,
-    otpToken: pending.otpToken,
   }
 
-  if (config.googleClientId) {
-    loginConfigs.google = {
-      clientId: config.googleClientId,
-      redirectUri: pending.redirectUri,
-      selectAccountPrompt: true,
-    }
+  loginConfigs.google = {
+    clientId: config.googleClientId,
+    redirectUri: pending.redirectUri,
+    selectAccountPrompt: true,
   }
 
   return {
@@ -760,11 +637,10 @@ async function loadCircleRuntime(): Promise<CircleRuntime> {
   }
 }
 
-function circleConfig(options?: { requireGoogle?: boolean }) {
+function circleConfig() {
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
-  const requireGoogle = options?.requireGoogle ?? true
-  if (!appId || (requireGoogle && !googleClientId)) {
+  if (!appId || !googleClientId) {
     throw new Error('Circle login is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and NEXT_PUBLIC_GOOGLE_CLIENT_ID.')
   }
 
@@ -787,20 +663,6 @@ function circleConfig(options?: { requireGoogle?: boolean }) {
 
 function normalizeRedirectUri(uri: string): string {
   return uri.replace(/\/$/, '')
-}
-
-function normalizeEmail(email: string): string {
-  const normalized = email.trim().toLowerCase()
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-    throw new Error('Enter a valid email address.')
-  }
-  return normalized
-}
-
-function redactEmail(email: string): string {
-  const [name, domain] = email.split('@')
-  if (!name || !domain) return 'redacted'
-  return `${name.slice(0, 2)}***@${domain}`
 }
 
 async function circleEndpoint<T>(action: string, body: Record<string, unknown>): Promise<T> {
@@ -1015,7 +877,21 @@ function persistCirclePendingLogin(session: CirclePendingLogin): void {
 function loadCirclePendingLogin(): CirclePendingLogin | null {
   try {
     const raw = localStorage.getItem(CIRCLE_PENDING_LOGIN_KEY)
-    return raw ? JSON.parse(raw) as CirclePendingLogin : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<CirclePendingLogin> & { provider?: string }
+    if (
+      parsed.provider !== 'google' ||
+      !parsed.deviceId ||
+      !parsed.deviceToken ||
+      !parsed.deviceEncryptionKey ||
+      !parsed.redirectUri ||
+      !parsed.returnPath ||
+      !parsed.startedAt
+    ) {
+      clearCirclePendingLogin()
+      return null
+    }
+    return parsed as CirclePendingLogin
   } catch {
     return null
   }
