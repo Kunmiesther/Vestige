@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { GroqHttpClient, type GroqClient } from "../ai/groq.client";
+import { GroqHttpClient, type GroqClient, type GroqGenerateJsonInput, type GroqGenerateJsonResult } from "../ai/groq.client";
 import { createMarketDataService } from "../markets/market.service";
 import type { MarketDataService } from "../markets/market.types";
 import { createPositionService, type PositionService } from "../positions/position.service";
@@ -11,7 +11,12 @@ import type { Agent } from "../shared/types/agent";
 import type { ReasoningStep, ReasoningTrace } from "../shared/types/trace";
 import { createTraceRepository, type TraceRepository } from "../traces/trace.repository";
 import { createTraceService, type TraceService } from "../traces/trace.service";
-import { VESTIGE_AGENT_PROFILES, type VestigeAgentProfile } from "./agent.prompts";
+import {
+  AGENT_CONTRIBUTION_RESPONSE_CONTRACT,
+  JSON_ONLY_RESPONSE_RULES,
+  VESTIGE_AGENT_PROFILES,
+  type VestigeAgentProfile,
+} from "./agent.prompts";
 
 export const runAgentRequestSchema = z.object({
   market: z.string().min(1),
@@ -61,6 +66,11 @@ interface AgentContribution {
   observation: string;
   inference: string;
   evidence: string[];
+  verdict: NonNullable<ReasoningTrace["verdict"]>["action"];
+  reasoning: string;
+  key_risks: string[];
+  opportunities: string[];
+  recommendation: string;
 }
 
 const agentContributionSchema = z
@@ -70,6 +80,11 @@ const agentContributionSchema = z
     observation: z.string().min(20),
     inference: z.string().min(20),
     evidence: z.array(z.string().min(1)).min(2).max(5),
+    verdict: z.enum(["EXECUTE", "RESTRUCTURE", "KILL"]),
+    reasoning: z.string().min(20),
+    key_risks: z.array(z.string().min(1)).min(1).max(6),
+    opportunities: z.array(z.string().min(1)).min(1).max(6),
+    recommendation: z.string().min(10),
   })
   .strict();
 
@@ -166,7 +181,7 @@ export class DefaultAgentRunner implements AgentRunner {
       VESTIGE_AGENT_PROFILES.map((profile) => this.generateContribution(profile, input)),
     );
 
-    const generated = await this.groqClient.generateJson({
+    const generated = await generateModelJson(this.groqClient, {
       temperature: 0.15,
       maxTokens: 2200,
       messages: [
@@ -200,12 +215,27 @@ export class DefaultAgentRunner implements AgentRunner {
           }),
         },
       ],
-    }).catch(() => synthesizeFromContributions(input, contributions));
+    }).catch((error) => {
+      console.error("[vestige:agents:synthesis-generation-failed]", {
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return null;
+    });
 
-    const parsed = generatedTraceBodySchema.safeParse(generated);
+    if (!generated) return synthesizeFromContributions(input, contributions);
+
+    const parsed = generatedTraceBodySchema.safeParse(generated.parsed);
     if (parsed.success) {
       return parsed.data;
     }
+
+    console.error("[vestige:agents:synthesis-validation-failed]", {
+      rawModelResponse: generated.raw,
+      parsedModelResponse: generated.parsed,
+      repaired: generated.repaired,
+      repairSteps: generated.repairSteps,
+      issues: parsed.error.flatten(),
+    });
 
     return synthesizeFromContributions(input, contributions);
   }
@@ -214,22 +244,28 @@ export class DefaultAgentRunner implements AgentRunner {
     profile: VestigeAgentProfile,
     input: RunAgentRequest,
   ): Promise<AgentContribution> {
-    const generated = await this.groqClient.generateJson({
+    const generated = await generateModelJson(this.groqClient, {
       temperature: 0.25,
-      maxTokens: 900,
+      maxTokens: 1100,
       messages: [
         {
           role: "system",
           content: [
             profile.systemPrompt,
-            "Return only JSON with keys: stance, confidence, observation, inference, evidence.",
-            "Evidence must cite the supplied live market snapshot, wallet/portfolio context, headline context, or the absence of a required signal.",
-            "Be specific, concise, non-repetitive, risk-aware, and institutional.",
+            JSON_ONLY_RESPONSE_RULES,
+            "Your output must match this exact JSON contract:",
+            AGENT_CONTRIBUTION_RESPONSE_CONTRACT,
+            "verdict must be EXECUTE, RESTRUCTURE, or KILL from this agent's perspective.",
+            "confidence must be exactly low, medium, or high.",
+            "reasoning should support longer strategic analysis but stay inside a single JSON string.",
+            "key_risks and opportunities must cite supplied live market data, wallet/portfolio context, headline context, or the explicit absence of a required signal.",
+            "recommendation must be concrete and compatible with the final Vestige verdict engine.",
+            "Be specific, non-repetitive, risk-aware, and institutional.",
           ].join("\n"),
         },
         {
           role: "user",
-          content: buildUserPrompt(input),
+          content: buildContributionUserPrompt(profile, input),
         },
       ],
     }).catch((error) => {
@@ -239,8 +275,18 @@ export class DefaultAgentRunner implements AgentRunner {
       );
     });
 
-    const parsed = agentContributionSchema.safeParse(generated);
+    const normalized = normalizeAgentContribution(profile, generated.parsed);
+    const parsed = agentContributionSchema.safeParse(normalized);
     if (!parsed.success) {
+      console.error("[vestige:agents:contribution-validation-failed]", {
+        agent: profile.name,
+        rawModelResponse: generated.raw,
+        parsedModelResponse: generated.parsed,
+        normalizedContribution: normalized,
+        repaired: generated.repaired,
+        repairSteps: generated.repairSteps,
+        issues: parsed.error.flatten(),
+      });
       throw new VestigeError(`${profile.name} returned an invalid structured contribution.`, "AGENT_OUTPUT_INVALID");
     }
 
@@ -252,6 +298,11 @@ export class DefaultAgentRunner implements AgentRunner {
       observation: parsed.data.observation,
       inference: parsed.data.inference,
       evidence: parsed.data.evidence,
+      verdict: parsed.data.verdict,
+      reasoning: parsed.data.reasoning,
+      key_risks: parsed.data.key_risks,
+      opportunities: parsed.data.opportunities,
+      recommendation: parsed.data.recommendation,
     };
   }
 }
@@ -260,14 +311,90 @@ export function createAgentRunner(): AgentRunner {
   return new DefaultAgentRunner();
 }
 
+async function generateModelJson(client: GroqClient, input: GroqGenerateJsonInput): Promise<GroqGenerateJsonResult> {
+  if (client.generateJsonResult) return client.generateJsonResult(input);
+  const parsed = await client.generateJson(input);
+  return {
+    parsed,
+    raw: safeJsonStringify(parsed),
+    repaired: false,
+    repairSteps: ["client returned parsed JSON only"],
+  };
+}
+
+function normalizeAgentContribution(
+  profile: VestigeAgentProfile,
+  value: unknown,
+): Partial<z.infer<typeof agentContributionSchema>> {
+  if (!isRecord(value) || !hasContributionSignal(value)) return {};
+
+  const record = value;
+
+  const verdict = normalizeVerdictAction(
+    pickFirst(record, ["verdict", "action", "decision", "recommendation_verdict", "final_verdict"]),
+  );
+  const confidence = normalizeConfidence(pickFirst(record, ["confidence", "conviction", "confidence_level", "probability"]));
+  const stance = normalizeStance(pickFirst(record, ["stance", "side", "bias", "position", "direction"]), verdict);
+
+  const reasoning = normalizeText(
+    pickFirst(record, ["reasoning", "rationale", "analysis", "thesis", "explanation"]),
+  );
+  const recommendation = normalizeText(
+    pickFirst(record, ["recommendation", "recommended_action", "action_plan", "call_to_action"]),
+  );
+  const observation = normalizeText(
+    pickFirst(record, ["observation", "observations", "market_observation", "summary"]),
+  ) || firstSentence(reasoning) || `${profile.name} evaluated the supplied market context from its ${profile.specialty} perspective.`;
+  const inference = normalizeText(
+    pickFirst(record, ["inference", "implication", "conclusion", "takeaway"]),
+  ) || recommendation || reasoning || `${profile.name} recommends ${verdict.toLowerCase()} with ${confidence} confidence.`;
+
+  const keyRisks = normalizeStringArray(
+    pickFirst(record, ["key_risks", "risks", "risk", "downside", "invalidation"]),
+  );
+  const opportunities = normalizeStringArray(
+    pickFirst(record, ["opportunities", "opportunity", "catalysts", "upside", "drivers"]),
+  );
+  const evidence = normalizeStringArray(
+    pickFirst(record, ["evidence", "supporting_evidence", "signals", "data_points", "references"]),
+  );
+
+  const fallbackRisks = keyRisks.length > 0 ? keyRisks : [`${profile.name}: ${inference}`];
+  const fallbackOpportunities = opportunities.length > 0 ? opportunities : [`${profile.name}: ${recommendation || inference}`];
+  const mergedEvidence = [
+    ...evidence,
+    ...fallbackOpportunities.slice(0, 2),
+    ...fallbackRisks.slice(0, 2),
+  ]
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 5);
+
+  return {
+    stance,
+    confidence,
+    observation: ensureMinText(observation, `${profile.name} observation`),
+    inference: ensureMinText(inference, `${profile.name} inference`),
+    evidence: ensureArrayLength(mergedEvidence, [
+      `${profile.name}: supplied context reviewed`,
+      `${profile.name}: missing or incomplete signal treated as risk`,
+    ], 2, 5),
+    verdict,
+    reasoning: ensureMinText(reasoning || `${observation} ${inference}`, `${profile.name} reasoning`),
+    key_risks: ensureArrayLength(fallbackRisks, [`${profile.name}: unresolved risk signal`], 1, 6),
+    opportunities: ensureArrayLength(fallbackOpportunities, [`${profile.name}: no clear opportunity without confirmation`], 1, 6),
+    recommendation: ensureMinText(recommendation || inference, `${profile.name} recommendation`),
+  };
+}
+
 function buildSynthesisPrompt(agent: Agent): string {
   return [
     agent.systemPrompt,
     "You are the final Vestige portfolio committee synthesizer.",
     "Write like an institutional crypto research terminal: concise, specific, risk-aware, and non-generic.",
     "Each reasoning step must represent a different agent perspective or committee synthesis.",
-    "Return only valid JSON.",
-    "Do not include markdown, commentary, XML, or chain-of-thought.",
+    JSON_ONLY_RESPONSE_RULES,
     "The JSON object must exactly match this shape:",
     JSON.stringify({
       thesis: "string",
@@ -309,6 +436,30 @@ function buildUserPrompt(input: RunAgentRequest): string {
       reasoningSteps: "Include 3 to 6 concise reasoning steps.",
       evidence:
         "Reference actual supplied market conditions, volatility, wallet exposure, portfolio concentration, catalysts, or explicit missing-data risks.",
+    },
+  });
+}
+
+function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAgentRequest): string {
+  return JSON.stringify({
+    task: `Generate one structured ${profile.name} contribution for Vestige's multi-agent verdict engine.`,
+    agent: {
+      name: profile.name,
+      specialty: profile.specialty,
+      tone: profile.tone,
+    },
+    market: input.market,
+    assetSymbol: input.assetSymbol,
+    context: input.context ?? {},
+    output_contract: JSON.parse(AGENT_CONTRIBUTION_RESPONSE_CONTRACT) as unknown,
+    constraints: {
+      verdict: "Use EXECUTE only if this agent sees actionable edge. Use RESTRUCTURE for wait/reduce/adjust. Use KILL for reject/avoid.",
+      confidence: "Return low, medium, or high only. Normalize uncertainty into one of these labels.",
+      reasoning: "2-5 concise sentences. Explain why, not just what.",
+      key_risks: "1-6 specific risks, including missing-data risks when relevant.",
+      opportunities: "1-6 specific catalysts/opportunities/positive signals.",
+      recommendation: "Concrete next action compatible with portfolio and trace verdict synthesis.",
+      json_only: "Return no markdown and no text outside the JSON object.",
     },
   });
 }
@@ -388,4 +539,144 @@ function contributionLines(contributions: AgentContribution[]): string[] {
     .map((contribution) => `${contribution.agent}: ${contribution.inference}`)
     .filter((line, index, lines) => lines.indexOf(line) === index)
     .slice(0, 4);
+}
+
+function normalizeConfidence(value: unknown): ReasoningTrace["confidence"] {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = value > 1 ? value / 100 : value;
+    if (normalized >= 0.75) return "high";
+    if (normalized >= 0.45) return "medium";
+    return "low";
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    const numeric = Number.parseFloat(normalized.replace("%", ""));
+    if (Number.isFinite(numeric) && /\d/.test(normalized)) {
+      return normalizeConfidence(normalized.includes("%") || numeric > 1 ? numeric / 100 : numeric);
+    }
+
+    if (["high", "strong", "elevated", "confident", "conviction", "certain"].some((item) => normalized.includes(item))) return "high";
+    if (["medium", "moderate", "balanced", "mixed", "neutral", "base"].some((item) => normalized.includes(item))) return "medium";
+    if (["low", "weak", "uncertain", "limited", "poor"].some((item) => normalized.includes(item))) return "low";
+  }
+
+  return "medium";
+}
+
+function normalizeVerdictAction(value: unknown): NonNullable<ReasoningTrace["verdict"]>["action"] {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized.includes("EXECUTE") || normalized.includes("BUY") || normalized.includes("LONG") || normalized.includes("ACT")) return "EXECUTE";
+  if (normalized.includes("KILL") || normalized.includes("REJECT") || normalized.includes("AVOID") || normalized.includes("NO TRADE")) return "KILL";
+  return "RESTRUCTURE";
+}
+
+function normalizeStance(
+  value: unknown,
+  verdict: NonNullable<ReasoningTrace["verdict"]>["action"],
+): ReasoningTrace["positionIntent"]["side"] {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized.includes("short") || normalized.includes("bear") || normalized.includes("downside")) return "short";
+  if (normalized.includes("long") || normalized.includes("bull") || normalized.includes("upside")) return "long";
+  if (normalized.includes("neutral") || normalized.includes("flat") || normalized.includes("wait")) return "neutral";
+  return verdict === "EXECUTE" ? "long" : "neutral";
+}
+
+function pickFirst(record: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined) return record[key];
+  }
+  return undefined;
+}
+
+function hasContributionSignal(record: Record<string, unknown>): boolean {
+  const expectedKeys = [
+    "verdict",
+    "action",
+    "decision",
+    "confidence",
+    "conviction",
+    "reasoning",
+    "analysis",
+    "recommendation",
+    "key_risks",
+    "risks",
+    "opportunities",
+    "catalysts",
+    "observation",
+    "inference",
+  ];
+
+  return expectedKeys.some((key) => record[key] !== undefined);
+}
+
+function normalizeText(value: unknown): string {
+  if (typeof value === "string") return stripMarkdownArtifacts(value).trim();
+  if (Array.isArray(value)) return value.map(normalizeText).filter(Boolean).join(" ");
+  if (isRecord(value)) return Object.values(value).map(normalizeText).filter(Boolean).join(" ");
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => normalizeStringArray(item));
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).flatMap((item) => normalizeStringArray(item));
+  }
+
+  const text = normalizeText(value);
+  if (!text) return [];
+
+  return text
+    .split(/\n+|(?:^|\s)(?:[-*•]|\d+[.)])\s+/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function ensureArrayLength(values: string[], fallbacks: string[], min: number, max: number): string[] {
+  const merged = [...values, ...fallbacks]
+    .map((item) => stripMarkdownArtifacts(item).trim())
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index);
+
+  while (merged.length < min) {
+    merged.push(fallbacks[merged.length % fallbacks.length] ?? "Signal unavailable.");
+  }
+
+  return merged.slice(0, max);
+}
+
+function ensureMinText(value: string, fallbackPrefix: string): string {
+  const text = stripMarkdownArtifacts(value).trim();
+  if (text.length >= 20) return text;
+  return `${fallbackPrefix}: ${text || "analysis depends on incomplete supplied market context."}`;
+}
+
+function firstSentence(value: string): string {
+  const match = value.match(/^[\s\S]*?[.!?](?:\s|$)/);
+  return match?.[0]?.trim() ?? value.trim();
+}
+
+function stripMarkdownArtifacts(value: string): string {
+  return value
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .replace(/<\/?think>/gi, "")
+    .replace(/^#+\s*/gm, "")
+    .trim();
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

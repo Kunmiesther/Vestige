@@ -12,6 +12,26 @@ export interface VestigeAgentProfile {
   systemPrompt: string;
 }
 
+export const JSON_ONLY_RESPONSE_RULES = [
+  "Return one valid JSON object only.",
+  "The first character must be { and the last character must be }.",
+  "Do not wrap the JSON in markdown fences.",
+  "Do not include prose before or after the JSON.",
+  "Do not include XML, HTML, <think> blocks, or chain-of-thought.",
+  "Use double-quoted JSON keys and string values.",
+  "Use arrays of strings for list fields.",
+  "Use null nowhere; use an empty array only when the schema explicitly allows it.",
+].join("\n");
+
+export const AGENT_CONTRIBUTION_RESPONSE_CONTRACT = JSON.stringify({
+  verdict: "EXECUTE | RESTRUCTURE | KILL",
+  confidence: "low | medium | high",
+  reasoning: "string, 2-5 concise sentences explaining the agent's analysis",
+  key_risks: ["string"],
+  opportunities: ["string"],
+  recommendation: "string, concrete action guidance from this agent's perspective",
+});
+
 export const VESTIGE_AGENT_PROFILES: VestigeAgentProfile[] = [
   {
     id: "10000000-0000-4000-8000-000000000001",
