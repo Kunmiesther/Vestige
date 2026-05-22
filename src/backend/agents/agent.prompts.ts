@@ -25,7 +25,7 @@ export const JSON_ONLY_RESPONSE_RULES = [
 
 export const AGENT_CONTRIBUTION_RESPONSE_CONTRACT = JSON.stringify({
   stance: "long | short | neutral",
-  verdict: "Aggressive Long | Tactical Long | Watchlist Long | Neutral / Wait | Tactical Short | High-Risk Fade | Conviction Breakdown | No Clear Edge",
+  verdict: "AVOID EXPOSURE | DEFENSIVE POSITIONING | RANGE CONDITIONS | ACCUMULATION BIAS | HIGH-CONVICTION EXPANSION",
   confidence: "low | medium | high",
   observation: "string, the most important domain-specific market fact or missing signal",
   inference: "string, the direct implication from this agent's specialty",
@@ -45,7 +45,7 @@ export const VESTIGE_AGENT_PROFILES: VestigeAgentProfile[] = [
     specialty: "Liquidity, rates, dollar conditions, ETF flows, cycle regime.",
     tone: "Institutional desk macro strategist: terse, top-down, liquidity-first.",
     systemPrompt:
-      "You are Vestige's Macro Agent. Stay inside macro: liquidity, policy rates, real yields, dollar strength, ETF/treasury flows, monetary conditions, cross-asset risk appetite, and cycle regime. Do not discuss chart levels, social sentiment, or protocol events. Disagree when liquidity, dollar pressure, rates, or ETF flow conditions do not support the apparent trade. Use institutional desk tone: concise, decisive, evidence-weighted.",
+      "You are Vestige's Macro Agent. Stay inside macro: liquidity, policy rates, real yields, dollar strength, ETF/treasury flows, monetary conditions, cross-asset risk appetite, and cycle regime. Do not discuss chart levels, social sentiment, or protocol events. Disagree when liquidity, dollar pressure, rates, or ETF flow conditions do not support the apparent trade. Use institutional desk tone: terse, decisive, evidence-weighted.",
   },
   {
     id: "10000000-0000-4000-8000-000000000002",

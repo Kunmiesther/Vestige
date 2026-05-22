@@ -2,7 +2,7 @@ import type { Agent, CreateAgentInput } from "./agent";
 import type { AgentPerformanceSnapshot } from "./performance";
 import type { MarketSnapshot } from "../../markets/market.types";
 import type { Follow, Position } from "./position";
-import type { ReasoningTrace } from "./trace";
+import type { ReasoningTrace, TracePaymentReceipt } from "./trace";
 
 export interface ApiErrorResponse {
   error: {
@@ -51,6 +51,7 @@ export interface ListTracesResponse {
 
 export interface GetTraceResponse {
   trace: ReasoningTrace;
+  receipt?: TracePaymentReceipt;
 }
 
 export interface ListPositionsQuery {
@@ -89,7 +90,7 @@ export interface CctpTransferResponse {
   configured: boolean;
   message: string;
   transferId?: string;
-  status?: 'queued' | 'submitted' | 'pending';
+  status?: 'queued' | 'submitted' | 'pending' | 'attesting' | 'completed';
 }
 
 export interface PaymentChallenge {
@@ -100,6 +101,26 @@ export interface PaymentChallenge {
   network: string;
   payTo: string;
   description: string;
+}
+
+export interface PremiumTracePreview {
+  id: string;
+  market: string;
+  assetSymbol: string;
+  accessTier?: ReasoningTrace["accessTier"];
+  unlockPriceUsdc?: string;
+  unlockCount?: number;
+  demandScore?: number;
+  createdAt: string;
+}
+
+export interface PremiumTracePaymentRequiredResponse {
+  paymentRequired: PaymentChallenge;
+  tracePreview?: PremiumTracePreview;
+}
+
+export interface PremiumTraceResponse extends GetTraceResponse {
+  receipt?: TracePaymentReceipt;
 }
 
 export interface FollowPositionRequest {

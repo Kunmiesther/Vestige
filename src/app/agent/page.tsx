@@ -39,7 +39,6 @@ export default function AgentPage() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<string | null>(null)
 
   const fetch = useCallback(async () => {
     setLoading(true); setError(null)
@@ -134,15 +133,12 @@ export default function AgentPage() {
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  <button onClick={() => setExpanded(expanded === agent.id ? null : agent.id)} className="btn-ghost">
-                    {expanded === agent.id ? 'Hide prompt' : 'View prompt'}
-                  </button>
                   <Link href="/dashboard" className="btn-trace">Run →</Link>
                 </div>
               </div>
 
               {/* Meta row */}
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: expanded === agent.id ? 16 : 0 }}>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
                 {[
                   { k: 'Model', v: agent.model },
                   { k: 'Slug', v: agent.slug },
@@ -156,19 +152,6 @@ export default function AgentPage() {
                 ))}
               </div>
 
-              {/* System prompt expandable */}
-              {expanded === agent.id && (
-                <div style={{
-                  background: 'rgba(5,5,7,0.8)', border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius)', padding: '16px 18px', marginTop: 4,
-                }}>
-                  <div className="mono-label" style={{ marginBottom: 8 }}>System prompt</div>
-                  <pre style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
-                    lineHeight: 1.8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0,
-                  }}>{agent.systemPrompt}</pre>
-                </div>
-              )}
             </div>
           ))}
         </div>

@@ -1,9 +1,12 @@
 import { VestigeError } from "../shared/errors";
 import type { PaymentChallenge } from "../shared/types/api";
+import type { TracePaymentReceipt } from "../shared/types/trace";
+import { randomUUID } from "node:crypto";
 
 export interface PremiumAccessResult {
   allowed: boolean;
   challenge?: PaymentChallenge;
+  receipt?: TracePaymentReceipt;
 }
 
 export interface X402Service {
@@ -13,7 +16,7 @@ export interface X402Service {
 export class HeaderX402Service implements X402Service {
   constructor(
     private readonly payTo = process.env.X402_PAY_TO,
-    private readonly amount = process.env.X402_PREMIUM_TRACE_USDC ?? "0.10",
+    private readonly amount = process.env.X402_PREMIUM_TRACE_USDC ?? "0.01",
     private readonly network = process.env.X402_NETWORK ?? "arc-testnet",
     private readonly facilitatorUrl = process.env.X402_FACILITATOR_URL,
   ) {}
@@ -47,12 +50,26 @@ export class HeaderX402Service implements X402Service {
       throw new VestigeError("x402 payment verification failed.", "X402_PAYMENT_REJECTED");
     }
 
-    const settled = await this.settleWithFacilitator(payment, challenge);
-    if (!settled) {
+    const settlement = await this.settleWithFacilitator(payment, challenge);
+    if (!settlement.settled) {
       throw new VestigeError("x402 payment settlement failed.", "X402_SETTLEMENT_FAILED");
     }
 
-    return { allowed: true };
+    return {
+      allowed: true,
+      receipt: {
+        receiptId: settlement.receiptId,
+        protocol: "x402",
+        amount: challenge.amount,
+        asset: "USDC",
+        network: challenge.network,
+        payTo: challenge.payTo,
+        payer: settlement.payer,
+        txHash: settlement.txHash,
+        facilitatorReference: settlement.facilitatorReference,
+        unlockedAt: new Date().toISOString(),
+      },
+    };
   }
 
   private createChallenge(resource: string): PaymentChallenge {
@@ -72,9 +89,21 @@ export class HeaderX402Service implements X402Service {
     return payload.valid === true || payload.isValid === true;
   }
 
-  private async settleWithFacilitator(payment: string, challenge: PaymentChallenge): Promise<boolean> {
-    const payload = await this.postFacilitator<{ success?: boolean; settled?: boolean }>("settle", payment, challenge);
-    return payload.success === true || payload.settled === true;
+  private async settleWithFacilitator(payment: string, challenge: PaymentChallenge): Promise<{
+    settled: boolean;
+    receiptId: string;
+    txHash?: string;
+    payer?: string;
+    facilitatorReference?: string;
+  }> {
+    const payload = await this.postFacilitator<Record<string, unknown>>("settle", payment, challenge);
+    return {
+      settled: payload.success === true || payload.settled === true,
+      receiptId: stringFromPath(payload, ["receiptId", "receipt.id", "id", "settlementId", "data.id"]) ?? randomUUID(),
+      txHash: stringFromPath(payload, ["txHash", "transactionHash", "receipt.transactionHash", "receipt.txHash", "data.txHash"]),
+      payer: stringFromPath(payload, ["payer", "from", "sender", "data.payer"]),
+      facilitatorReference: stringFromPath(payload, ["reference", "data.reference", "paymentId", "data.paymentId"]),
+    };
   }
 
   private async postFacilitator<T>(path: "verify" | "settle", payment: string, challenge: PaymentChallenge): Promise<T> {
@@ -94,6 +123,17 @@ export class HeaderX402Service implements X402Service {
 
     return payload as T;
   }
+}
+
+function stringFromPath(record: Record<string, unknown>, paths: string[]): string | undefined {
+  for (const path of paths) {
+    const value = path.split(".").reduce<unknown>((current, key) => {
+      if (!current || typeof current !== "object") return undefined;
+      return (current as Record<string, unknown>)[key];
+    }, record);
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
 }
 
 export function createX402Service(): X402Service {

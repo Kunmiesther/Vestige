@@ -5,14 +5,36 @@ export type PositionSide = "long" | "short" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type TimeHorizon = "intraday" | "swing" | "long-term";
 export type VerdictAction =
-  | "Aggressive Long"
-  | "Tactical Long"
-  | "Watchlist Long"
-  | "Neutral / Wait"
-  | "Tactical Short"
-  | "High-Risk Fade"
-  | "Conviction Breakdown"
-  | "No Clear Edge";
+  | "AVOID EXPOSURE"
+  | "DEFENSIVE POSITIONING"
+  | "RANGE CONDITIONS"
+  | "ACCUMULATION BIAS"
+  | "HIGH-CONVICTION EXPANSION";
+export type TraceAccessTier = "public" | "premium" | "institutional";
+
+export interface TracePaymentReceipt {
+  receiptId: string;
+  protocol: "x402";
+  amount: string;
+  asset: "USDC";
+  network: string;
+  payer?: string;
+  payTo?: string;
+  txHash?: string;
+  facilitatorReference?: string;
+  unlockedAt: ISODateTime;
+}
+
+export interface TraceIntelligenceMetrics {
+  marketRegime?: string;
+  liquidityState?: string;
+  volatilityState?: string;
+  alignment?: number;
+  pressure?: number;
+  catalystStrength?: number;
+  disagreement?: number;
+  convictionTemperature?: string;
+}
 
 export interface ReasoningStep {
   order: number;
@@ -55,5 +77,11 @@ export interface ReasoningTrace {
   rawModelOutput?: string;
   status: TraceStatus;
   premium?: boolean;
+  accessTier?: TraceAccessTier;
+  unlockPriceUsdc?: string;
+  unlockCount?: number;
+  demandScore?: number;
+  paymentReceipts?: TracePaymentReceipt[];
+  traceMetrics?: TraceIntelligenceMetrics;
   createdAt: ISODateTime;
 }

@@ -3,11 +3,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { listTraces, ApiError } from '@/lib/api'
-import { formatRelative, formatDate, confidenceLabel, statusLabel } from '@/lib/trace-utils'
-import type { ReasoningTrace, ConfidenceLevel, TraceStatus } from '@/backend/shared/types/trace'
+import { formatRelative, formatDate, statusLabel, convictionState } from '@/lib/trace-utils'
+import type { ReasoningTrace, TraceStatus } from '@/backend/shared/types/trace'
 
-function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
-  return <span className={`conviction conviction-${level}`}>{confidenceLabel(level)}</span>
+function StateBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = trace.verdict?.action ?? convictionState(trace)
+  return <span className={`conviction conviction-${trace.confidence}`}>{label}</span>
 }
 
 function StatusBadge({ status }: { status: TraceStatus }) {
@@ -119,7 +120,7 @@ export default function TracesPage() {
         display: 'grid', gridTemplateColumns: '60px 1fr 110px 100px 90px 100px',
         gap: 12, padding: '6px 20px', marginBottom: 6,
       }} className="hide-mobile">
-        {['Asset','Market','Confidence','Status','Age',''].map(h => (
+        {['Asset','Market','State','Status','Age',''].map(h => (
           <div key={h} className="mono-label">{h}</div>
         ))}
       </div>
@@ -169,7 +170,7 @@ export default function TracesPage() {
                       {formatDate(trace.createdAt)}
                     </div>
                   </div>
-                  <ConfidenceBadge level={trace.confidence} />
+                  <StateBadge trace={trace} />
                   <StatusBadge status={trace.status} />
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
                     {formatRelative(trace.createdAt)}
@@ -182,7 +183,7 @@ export default function TracesPage() {
                   <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)', background: 'var(--violet-dim)', border: '1px solid var(--violet-border)', padding: '2px 7px', borderRadius: 3 }}>{trace.assetSymbol}</span>
-                      <ConfidenceBadge level={trace.confidence} />
+                      <StateBadge trace={trace} />
                       <StatusBadge status={trace.status} />
                     </div>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>{formatRelative(trace.createdAt)}</span>

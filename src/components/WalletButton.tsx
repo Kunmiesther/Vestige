@@ -3,15 +3,18 @@
 import { useState } from 'react'
 import { useWallet } from '@/contexts/WalletContext'
 import { WalletModal } from './WalletModal'
-import { truncateAddress } from '@/lib/arc'
-import { ARC_TESTNET } from '@/lib/arc'
+import { getCctpQuote, submitCctpTransfer, ApiError } from '@/lib/api'
+import { loadCircleSession } from '@/lib/wallet'
+import { ARC_TESTNET, truncateAddress } from '@/lib/arc'
 
 export function WalletButton() {
   const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect, refreshBalance } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [showBridge, setShowBridge] = useState(false)
   const [copied, setCopied] = useState(false)
   const modal = showModal ? <WalletModal onClose={() => setShowModal(false)} /> : null
+  const bridgeModal = showBridge && address ? <BridgeModal address={address} onClose={() => setShowBridge(false)} onComplete={refreshBalance} /> : null
 
   async function copyAddress() {
     if (!address) return
@@ -39,6 +42,7 @@ export function WalletButton() {
           }}
         >Connect wallet</button>
         {modal}
+        {bridgeModal}
       </>
     )
   }
@@ -58,6 +62,7 @@ export function WalletButton() {
         <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
       </div>
       {modal}
+      {bridgeModal}
       </>
     )
   }
@@ -205,6 +210,36 @@ export function WalletButton() {
               >View on Arcscan ↗</a>
             )}
 
+            <a
+              href={ARC_TESTNET.faucetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'block', padding: '10px 16px',
+                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+                letterSpacing: '0.04em', transition: 'color .15s',
+                borderBottom: '1px solid var(--border)',
+              }}
+            >Fund wallet</a>
+
+            <button
+              onClick={() => { setShowBridge(true); setShowDropdown(false) }}
+              style={{
+                display: 'block', width: '100%', padding: '10px 16px',
+                background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+                letterSpacing: '0.04em', transition: 'background .15s',
+                borderBottom: '1px solid var(--border)',
+              }}
+            >Bridge USDC</button>
+
+            <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+              <div className="mono-label" style={{ marginBottom: 4 }}>Recent transactions</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                No local receipts yet.
+              </div>
+            </div>
+
             <button
               onClick={async () => { await refreshBalance(); setShowDropdown(false) }}
               style={{
@@ -229,6 +264,169 @@ export function WalletButton() {
           </div>
         </>
       )}
+      {bridgeModal}
+    </div>
+  )
+}
+
+type BridgeState = 'idle' | 'quoting' | 'pending' | 'attesting' | 'completed'
+
+const SOURCE_CHAINS = [
+  { label: 'Ethereum Sepolia', chainId: 11155111 },
+  { label: 'Base Sepolia', chainId: 84532 },
+  { label: 'Arbitrum Sepolia', chainId: 421614 },
+]
+
+function BridgeModal({
+  address,
+  onClose,
+  onComplete,
+}: {
+  address: string
+  onClose: () => void
+  onComplete: () => Promise<void>
+}) {
+  const [sourceChain, setSourceChain] = useState(SOURCE_CHAINS[0].chainId)
+  const [amount, setAmount] = useState('')
+  const [state, setState] = useState<BridgeState>('idle')
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function startBridge() {
+    if (!amount || Number.parseFloat(amount) <= 0) {
+      setError('Enter a USDC amount.')
+      return
+    }
+
+    const session = loadCircleSession()
+    setError(null)
+    setMessage(null)
+
+    try {
+      setState('quoting')
+      const quote = await getCctpQuote({
+        fromChainId: sourceChain,
+        toChainId: ARC_TESTNET.chainId,
+        amount,
+        recipient: address,
+        walletId: session?.wallet?.id,
+      })
+      setMessage(quote.message)
+
+      setState('pending')
+      const transfer = await submitCctpTransfer({
+        fromChainId: sourceChain,
+        toChainId: ARC_TESTNET.chainId,
+        amount,
+        recipient: address,
+        walletId: session?.wallet?.id,
+        quoteId: quote.quoteId,
+      })
+      setMessage(transfer.transferId ? `${transfer.message} / ${transfer.transferId}` : transfer.message)
+      setState(transfer.status === 'pending' ? 'attesting' : 'completed')
+      await onComplete().catch(() => undefined)
+    } catch (err) {
+      setState('idle')
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Bridge transfer failed.')
+    }
+  }
+
+  const stateLabel: Record<BridgeState, string> = {
+    idle: 'Ready',
+    quoting: 'Requesting quote...',
+    pending: 'Pending...',
+    attesting: 'Attesting...',
+    completed: 'Completed',
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 220,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        background: 'rgba(5,5,7,0.9)', backdropFilter: 'blur(10px)',
+      }}
+      onClick={event => event.target === event.currentTarget && onClose()}
+    >
+      <div style={{
+        width: '100%', maxWidth: 420,
+        background: 'var(--bg-card)', border: '1px solid var(--border-hover)',
+        borderRadius: 'var(--radius-lg)', padding: '24px 22px',
+      }}>
+        <div className="mono-label" style={{ marginBottom: 8 }}>CCTP bridge</div>
+        <h2 style={{
+          fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.04em',
+          color: 'var(--text-primary)', marginBottom: 18,
+        }}>Bridge USDC to Arc</h2>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>Source chain</label>
+            <select
+              value={sourceChain}
+              onChange={event => setSourceChain(Number(event.target.value))}
+              disabled={state !== 'idle'}
+              style={{
+                width: '100%', background: 'rgba(5,5,7,0.8)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 12,
+                color: 'var(--text-primary)', outline: 'none',
+              }}
+            >
+              {SOURCE_CHAINS.map(chain => (
+                <option key={chain.chainId} value={chain.chainId}>{chain.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>Amount</label>
+            <input
+              value={amount}
+              onChange={event => setAmount(event.target.value)}
+              disabled={state !== 'idle'}
+              inputMode="decimal"
+              placeholder="0.00"
+              style={{
+                width: '100%', background: 'rgba(5,5,7,0.8)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 12,
+                color: 'var(--text-primary)', outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
+            background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+          }}>
+            {stateLabel[state]}
+            {message ? ` / ${message}` : ''}
+          </div>
+
+          {error && (
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember)',
+              background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.22)',
+              borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+            }}>{error}</div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+            <button
+              onClick={startBridge}
+              disabled={state !== 'idle'}
+              className="btn-primary"
+              style={{ flex: 1, justifyContent: 'center', opacity: state !== 'idle' ? 0.7 : 1 }}
+            >
+              {state === 'idle' ? 'Initiate bridge' : stateLabel[state]}
+            </button>
+            <button onClick={onClose} className="btn-ghost">Close</button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

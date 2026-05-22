@@ -5,15 +5,37 @@ export const confidenceLevelSchema = z.enum(["low", "medium", "high"]);
 export const timeHorizonSchema = z.enum(["intraday", "swing", "long-term"]);
 export const traceStatusSchema = z.enum(["draft", "stored", "failed"]);
 export const verdictActionSchema = z.enum([
-  "Aggressive Long",
-  "Tactical Long",
-  "Watchlist Long",
-  "Neutral / Wait",
-  "Tactical Short",
-  "High-Risk Fade",
-  "Conviction Breakdown",
-  "No Clear Edge",
+  "AVOID EXPOSURE",
+  "DEFENSIVE POSITIONING",
+  "RANGE CONDITIONS",
+  "ACCUMULATION BIAS",
+  "HIGH-CONVICTION EXPANSION",
 ]);
+export const traceAccessTierSchema = z.enum(["public", "premium", "institutional"]);
+
+export const tracePaymentReceiptSchema = z.object({
+  receiptId: z.string(),
+  protocol: z.literal("x402"),
+  amount: z.string(),
+  asset: z.literal("USDC"),
+  network: z.string(),
+  payer: z.string().optional(),
+  payTo: z.string().optional(),
+  txHash: z.string().optional(),
+  facilitatorReference: z.string().optional(),
+  unlockedAt: z.string(),
+});
+
+export const traceIntelligenceMetricsSchema = z.object({
+  marketRegime: z.string().optional(),
+  liquidityState: z.string().optional(),
+  volatilityState: z.string().optional(),
+  alignment: z.number().min(0).max(1).optional(),
+  pressure: z.number().min(0).max(1).optional(),
+  catalystStrength: z.number().min(0).max(1).optional(),
+  disagreement: z.number().min(0).max(1).optional(),
+  convictionTemperature: z.string().optional(),
+});
 
 export const reasoningStepSchema = z.object({
   order: z.number().int().nonnegative(),
@@ -56,6 +78,12 @@ export const reasoningTraceSchema = z.object({
   rawModelOutput: z.string().optional(),
   status: traceStatusSchema,
   premium: z.boolean().optional(),
+  accessTier: traceAccessTierSchema.optional(),
+  unlockPriceUsdc: z.string().optional(),
+  unlockCount: z.number().int().nonnegative().optional(),
+  demandScore: z.number().nonnegative().optional(),
+  paymentReceipts: z.array(tracePaymentReceiptSchema).optional(),
+  traceMetrics: traceIntelligenceMetricsSchema.optional(),
   createdAt: z.string(),
 });
 

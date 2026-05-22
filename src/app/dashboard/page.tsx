@@ -5,15 +5,27 @@ import Link from 'next/link'
 import { getMarketSnapshot, listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
 import { useWallet } from '@/contexts/WalletContext'
 import { restoreWalletPortfolioState } from '@/lib/wallet'
-import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
+import {
+  formatRelative,
+  deriveEdge,
+  sideColor,
+  sideLabel,
+  traceAccessLabel,
+  traceUnlockCount,
+  deriveAuditMetrics,
+  convictionState,
+} from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
-import type { ConfidenceLevel } from '@/backend/shared/types/trace'
+
+function mostCommon(values: string[]): string | undefined {
+  const counts = new Map<string, number>()
+  for (const value of values.filter(Boolean)) {
+    counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+}
 
 // ─── Micro-badges ─────────────────────────────────────────────────────────────
-
-function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
-  return <span className={`conviction conviction-${level}`}>{confidenceLabel(level)}</span>
-}
 
 function SideBadge({ trace }: { trace: ReasoningTrace }) {
   const side = trace.positionIntent.side
@@ -25,6 +37,35 @@ function SideBadge({ trace }: { trace: ReasoningTrace }) {
       border: `1px solid ${side === 'long' ? 'var(--lime-border)' : side === 'short' ? 'rgba(255,107,53,0.2)' : 'var(--border)'}`,
       padding: '3px 9px', borderRadius: 3,
     }}>{sideLabel(side)}</span>
+  )
+}
+
+function StateBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = trace.verdict?.action ?? convictionState(trace)
+  return (
+    <span style={{
+      fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
+      textTransform: 'uppercase' as const, color: label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'var(--ember)' : 'var(--text-secondary)',
+      background: label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime-dim)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'var(--ember-dim)' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime-border)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'rgba(255,107,53,0.2)' : 'var(--border)'}`,
+      padding: '3px 9px', borderRadius: 3,
+      textAlign: 'center',
+    }}>{label}</span>
+  )
+}
+
+function AccessBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = traceAccessLabel(trace)
+  return (
+    <span style={{
+      fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
+      textTransform: 'uppercase' as const,
+      color: label === 'PUBLIC' ? 'var(--text-tertiary)' : 'var(--lime)',
+      background: label === 'PUBLIC' ? 'rgba(255,255,255,0.03)' : 'var(--lime-dim)',
+      border: `1px solid ${label === 'PUBLIC' ? 'var(--border)' : 'var(--lime-border)'}`,
+      padding: '3px 9px', borderRadius: 3,
+      textAlign: 'center',
+    }}>{label}</span>
   )
 }
 
@@ -334,7 +375,7 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
         {/* Desktop grid */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
+          gridTemplateColumns: '70px 1fr 150px 110px 100px 80px 90px',
           gap: 12, alignItems: 'center',
         }} className="hide-mobile">
           <span style={{
@@ -356,8 +397,9 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
             }}>{deriveEdge(trace)}</div>
           </div>
 
-          <ConfidenceBadge level={trace.confidence} />
+          <StateBadge trace={trace} />
           <SideBadge trace={trace} />
+          <AccessBadge trace={trace} />
 
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10,
@@ -387,8 +429,9 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
                 background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
                 padding: '2px 7px', borderRadius: 3,
               }}>{trace.assetSymbol}</span>
-              <ConfidenceBadge level={trace.confidence} />
+              <StateBadge trace={trace} />
               <SideBadge trace={trace} />
+              <AccessBadge trace={trace} />
             </div>
             <span style={{
               fontFamily: 'var(--font-mono)', fontSize: 10,
@@ -472,10 +515,20 @@ export default function DashboardPage() {
     return t.positionIntent.side === filter
   })
 
-  const long    = traces.filter(t => t.positionIntent.side === 'long').length
-  const short   = traces.filter(t => t.positionIntent.side === 'short').length
-  const neutral = traces.filter(t => t.positionIntent.side === 'neutral').length
-  const stored  = traces.filter(t => t.status === 'stored').length
+  const receipts = traces.flatMap(trace => trace.paymentReceipts ?? [])
+  const totalUsdc = receipts.reduce((sum, receipt) => sum + (Number.parseFloat(receipt.amount) || 0), 0)
+  const paidUnlocks = receipts.length || traces.reduce((sum, trace) => sum + traceUnlockCount(trace), 0)
+  const activeAnalysts = agents.filter(agent => agent.status === 'active').length
+  const convictionStates = traces.map(convictionState)
+  const dominantConviction = mostCommon(convictionStates) ?? 'No traces'
+  const marketRegime = mostCommon(traces.map(trace => deriveAuditMetrics(trace).marketRegime)) ?? 'No regime'
+  const highestDemandTrace = traces
+    .filter(trace => traceUnlockCount(trace) > 0)
+    .sort((a, b) => traceUnlockCount(b) - traceUnlockCount(a))[0]
+  const recentPaidActivity = receipts
+    .slice()
+    .sort((a, b) => new Date(b.unlockedAt).getTime() - new Date(a.unlockedAt).getTime())
+    .slice(0, 3)
 
   return (
     <>
@@ -524,10 +577,10 @@ export default function DashboardPage() {
               borderRadius: 'var(--radius-lg)', overflow: 'hidden',
             }}>
               {[
-                { label: 'Long',    val: long,    color: 'var(--lime)'          },
-                { label: 'Short',   val: short,   color: 'var(--ember)'         },
-                { label: 'Neutral', val: neutral, color: 'var(--text-secondary)'},
-                { label: 'Stored',  val: stored,  color: 'var(--violet)'        },
+                { label: 'USDC processed', val: totalUsdc.toFixed(2), color: 'var(--lime)' },
+                { label: 'Paid unlocks', val: paidUnlocks, color: 'var(--violet)' },
+                { label: 'Analysts', val: activeAnalysts, color: 'var(--text-primary)' },
+                { label: 'Regime', val: marketRegime, color: 'var(--text-secondary)' },
               ].map(s => (
                 <div key={s.label} style={{ background: 'var(--bg-card)', padding: '12px 16px', textAlign: 'center' }}>
                   <div className="mono-label" style={{ marginBottom: 4 }}>{s.label}</div>
@@ -540,6 +593,40 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))',
+          gap: 1, background: 'var(--border)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)', overflow: 'hidden', marginBottom: 28,
+        }}>
+          {[
+            { label: 'Conviction state', val: dominantConviction },
+            { label: 'Market regime', val: marketRegime },
+            { label: 'Highest demand', val: highestDemandTrace ? `${highestDemandTrace.assetSymbol} / ${traceUnlockCount(highestDemandTrace)} unlocks` : 'No paid unlocks yet' },
+            { label: 'Recent paid activity', val: recentPaidActivity[0] ? `${recentPaidActivity[0].amount} ${recentPaidActivity[0].asset} on ${recentPaidActivity[0].network}` : 'No paid unlocks yet' },
+          ].map(item => (
+            <div key={item.label} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
+              <div className="mono-label" style={{ marginBottom: 6 }}>{item.label}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {loadingTraces ? '---' : item.val}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {recentPaidActivity.length > 0 && (
+          <div className="card" style={{ padding: '14px 18px', marginBottom: 24 }}>
+            <div className="mono-label" style={{ marginBottom: 10 }}>Protocol activity</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {recentPaidActivity.map(receipt => (
+                <div key={receipt.receiptId} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                  Wallet {receipt.payer ? `${receipt.payer.slice(0, 6)}...${receipt.payer.slice(-4)}` : 'unknown'} unlocked a premium trace for {receipt.amount} {receipt.asset}
+                  {receipt.txHash ? ` / ${receipt.txHash.slice(0, 10)}...` : ''}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Agents error */}
         {agentsError && (
@@ -581,10 +668,10 @@ export default function DashboardPage() {
         {/* Column headers — desktop */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
+          gridTemplateColumns: '70px 1fr 150px 110px 100px 80px 90px',
           gap: 12, padding: '6px 20px', marginBottom: 6,
         }} className="hide-mobile">
-          {['Asset','Market / Edge','Confidence','Side','Audit','Age',''].map(h => (
+          {['Asset','Market / Edge','State','Side','Access','Age',''].map(h => (
             <div key={h} className="mono-label">{h}</div>
           ))}
         </div>

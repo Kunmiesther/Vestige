@@ -14,6 +14,9 @@ import type {
   ListAgentsResponse,
   ListTracesResponse,
   GetTraceResponse,
+  PaymentChallenge,
+  PremiumTracePaymentRequiredResponse,
+  PremiumTraceResponse,
   GetMarketSnapshotResponse,
   CctpQuoteRequest,
   CctpQuoteResponse,
@@ -121,6 +124,41 @@ export async function listTraces(params?: {
 export async function getTrace(traceId: string): Promise<ReasoningTrace> {
   const data = await apiFetch<GetTraceResponse>(`/api/traces/${traceId}`)
   return data.trace
+}
+
+export type PremiumTraceAccessResult =
+  | { status: 'granted'; trace: ReasoningTrace; receipt?: PremiumTraceResponse['receipt'] }
+  | { status: 'payment_required'; paymentRequired: PaymentChallenge; tracePreview?: PremiumTracePaymentRequiredResponse['tracePreview'] }
+
+export async function getPremiumTrace(
+  traceId: string,
+  paymentHeader?: string,
+): Promise<PremiumTraceAccessResult> {
+  const res = await fetch(`/api/traces/${traceId}/premium`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(paymentHeader ? { 'x-payment': paymentHeader } : {}),
+    },
+  })
+
+  if (res.status === 402) {
+    const body = await res.json() as PremiumTracePaymentRequiredResponse
+    return { status: 'payment_required', paymentRequired: body.paymentRequired, tracePreview: body.tracePreview }
+  }
+
+  if (!res.ok) {
+    let code = 'PREMIUM_TRACE_FAILED'
+    let message = `Request failed with status ${res.status}`
+    try {
+      const body = (await res.json()) as ApiErrorResponse
+      code = body.error.code
+      message = body.error.message
+    } catch {}
+    throw new ApiError(code, message, res.status)
+  }
+
+  const body = await res.json() as PremiumTraceResponse
+  return { status: 'granted', trace: body.trace, receipt: body.receipt }
 }
 
 

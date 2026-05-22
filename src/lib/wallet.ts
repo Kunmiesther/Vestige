@@ -64,7 +64,7 @@ export interface WalletPortfolioState {
   updatedAt: string
 }
 
-interface CircleSession {
+export interface CircleSession {
   userToken: string
   encryptionKey: string
   refreshToken?: string

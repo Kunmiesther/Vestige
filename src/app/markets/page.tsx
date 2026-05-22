@@ -5,11 +5,12 @@ import Link from 'next/link'
 import { getMarketSnapshot, listPositions, listTraces, syncPositions, ApiError, type MarketSnapshot, type Position } from '@/lib/api'
 import { useWallet } from '@/contexts/WalletContext'
 import { loadWalletWatchlist, saveWalletWatchlist } from '@/lib/wallet'
-import { formatRelative, confidenceLabel, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
-import type { ReasoningTrace, ConfidenceLevel } from '@/backend/shared/types/trace'
+import { formatRelative, convictionState, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
+import type { ReasoningTrace } from '@/backend/shared/types/trace'
 
-function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
-  return <span className={`conviction conviction-${level}`}>{confidenceLabel(level)}</span>
+function StateBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = trace.verdict?.action ?? convictionState(trace)
+  return <span className={`conviction conviction-${trace.confidence}`}>{label}</span>
 }
 
 function Skeleton() {
@@ -37,7 +38,7 @@ export default function MarketsPage() {
   const [loading, setLoading] = useState(true)
   const [watchLoading, setWatchLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sort, setSort] = useState<'newest' | 'conviction'>('newest')
+  const [sort, setSort] = useState<'newest' | 'positioning'>('newest')
 
   const fetch = useCallback(async () => {
     setLoading(true); setError(null)
@@ -99,9 +100,8 @@ export default function MarketsPage() {
   }
 
   const sorted = [...traces].sort((a, b) => {
-    if (sort === 'conviction') {
-      const order = { high: 0, medium: 1, low: 2 }
-      return order[a.confidence] - order[b.confidence]
+    if (sort === 'positioning') {
+      return (b.verdict?.score ?? 0) - (a.verdict?.score ?? 0)
     }
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   })
@@ -228,7 +228,7 @@ export default function MarketsPage() {
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16, gap: 6 }}>
-        {(['newest','conviction'] as const).map(s => (
+        {(['newest','positioning'] as const).map(s => (
           <button key={s} onClick={() => setSort(s)} style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
             textTransform: 'uppercase', padding: '5px 12px', borderRadius: 3,
@@ -276,7 +276,7 @@ export default function MarketsPage() {
                     {deriveEdge(trace)}
                   </div>
                 </div>
-                <ConfidenceBadge level={trace.confidence} />
+                <StateBadge trace={trace} />
                 <span style={{
                   fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase',
                   letterSpacing: '0.06em', color: sideColor(trace.positionIntent.side),
@@ -291,7 +291,7 @@ export default function MarketsPage() {
               <div style={{ background: 'var(--bg-card)', padding: '16px', borderLeft: `3px solid ${sideColor(trace.positionIntent.side)}` }} className="show-mobile-block">
                 <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)', background: 'var(--violet-dim)', border: '1px solid var(--violet-border)', padding: '2px 7px', borderRadius: 3 }}>{trace.assetSymbol}</span>
-                  <ConfidenceBadge level={trace.confidence} />
+                  <StateBadge trace={trace} />
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: sideColor(trace.positionIntent.side), textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sideLabel(trace.positionIntent.side)}</span>
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4 }}>{trace.market}</div>

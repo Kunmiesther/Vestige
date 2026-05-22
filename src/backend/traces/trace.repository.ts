@@ -334,6 +334,8 @@ function mapAgentRow(row: Record<string, unknown>): Agent {
 }
 
 function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
+  const paymentReceipts = asPaymentReceipts(row.payment_receipts ?? row.paymentReceipts) ?? [];
+  const unlockCount = optionalNumber(row.unlock_count ?? row.unlockCount) ?? paymentReceipts.length;
   return {
     id: asString(row.id),
     agentId: asString(row.agent_id),
@@ -350,6 +352,12 @@ function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
     rawModelOutput: optionalString(row.raw_model_output),
     status: asTraceStatus(row.status),
     premium: asBoolean(row.premium),
+    accessTier: asTraceAccessTier(row.access_tier ?? row.accessTier ?? (asBoolean(row.premium) ? "premium" : "public")),
+    unlockPriceUsdc: optionalString(row.unlock_price_usdc ?? row.unlockPriceUsdc),
+    unlockCount,
+    demandScore: optionalNumber(row.demand_score ?? row.demandScore) ?? unlockCount,
+    paymentReceipts,
+    traceMetrics: asTraceMetrics(row.trace_metrics ?? row.traceMetrics),
     createdAt: asString(row.created_at),
   };
 }
@@ -474,6 +482,29 @@ function asPositionIntent(value: unknown): ReasoningTrace["positionIntent"] {
 function asStructuredVerdict(value: unknown): ReasoningTrace["verdict"] | undefined {
   if (!value || typeof value !== "object") return undefined;
   return value as ReasoningTrace["verdict"];
+}
+
+function asTraceAccessTier(value: unknown): ReasoningTrace["accessTier"] {
+  return value === "institutional" || value === "premium" ? value : "public";
+}
+
+function asPaymentReceipts(value: unknown): ReasoningTrace["paymentReceipts"] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is NonNullable<ReasoningTrace["paymentReceipts"]>[number] => {
+    if (!item || typeof item !== "object") return false;
+    const record = item as Record<string, unknown>;
+    return record.protocol === "x402" &&
+      typeof record.receiptId === "string" &&
+      typeof record.amount === "string" &&
+      record.asset === "USDC" &&
+      typeof record.network === "string" &&
+      typeof record.unlockedAt === "string";
+  });
+}
+
+function asTraceMetrics(value: unknown): ReasoningTrace["traceMetrics"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return value as ReasoningTrace["traceMetrics"];
 }
 
 function asAgentStatus(value: unknown): Agent["status"] {

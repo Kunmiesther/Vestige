@@ -56,6 +56,7 @@ interface GeneratedTraceBody {
   confidence: ReasoningTrace["confidence"];
   positionIntent: ReasoningTrace["positionIntent"];
   verdict?: ReasoningTrace["verdict"];
+  traceMetrics?: ReasoningTrace["traceMetrics"];
 }
 
 interface AgentContribution {
@@ -111,14 +112,11 @@ interface PositioningDecisionInput {
 }
 
 const POSITIONING_ACTIONS = [
-  "Aggressive Long",
-  "Tactical Long",
-  "Watchlist Long",
-  "Neutral / Wait",
-  "Tactical Short",
-  "High-Risk Fade",
-  "Conviction Breakdown",
-  "No Clear Edge",
+  "AVOID EXPOSURE",
+  "DEFENSIVE POSITIONING",
+  "RANGE CONDITIONS",
+  "ACCUMULATION BIAS",
+  "HIGH-CONVICTION EXPANSION",
 ] as const satisfies readonly VerdictAction[];
 
 const agentContributionSchema = z
@@ -175,6 +173,7 @@ export class DefaultAgentRunner implements AgentRunner {
       throw new VestigeError("Agent committee did not produce a structured verdict.", "AGENT_VERDICT_MISSING");
     }
 
+    const accessTier = accessTierFromVerdict(verdict);
     const candidateTrace: ReasoningTrace = {
       id: randomUUID(),
       agentId: agent.id,
@@ -190,6 +189,12 @@ export class DefaultAgentRunner implements AgentRunner {
       verdict,
       rawModelOutput: JSON.stringify(generatedPayload),
       status: "stored",
+      premium: accessTier !== "public",
+      accessTier,
+      unlockPriceUsdc: accessTier === "public" ? undefined : process.env.X402_PREMIUM_TRACE_USDC ?? "0.01",
+      unlockCount: 0,
+      demandScore: 0,
+      traceMetrics: generatedPayload.traceMetrics,
       createdAt: now,
     };
 
@@ -479,7 +484,7 @@ function buildSynthesisPrompt(agent: Agent): string {
         timeHorizon: "intraday | swing | long-term",
       },
       verdict: {
-        action: "Aggressive Long | Tactical Long | Watchlist Long | Neutral / Wait | Tactical Short | High-Risk Fade | Conviction Breakdown | No Clear Edge",
+        action: "AVOID EXPOSURE | DEFENSIVE POSITIONING | RANGE CONDITIONS | ACCUMULATION BIAS | HIGH-CONVICTION EXPANSION",
         summary: "string",
         confidence: "low | medium | high",
         score: 0,
@@ -488,7 +493,7 @@ function buildSynthesisPrompt(agent: Agent): string {
       },
     }),
     "Include 6 concise reasoning steps: Macro, Sentiment, Technical, Risk, Catalyst, Committee synthesis.",
-    "The final verdict must use institutional positioning language only.",
+    "The final verdict must use only these range labels: AVOID EXPOSURE, DEFENSIVE POSITIONING, RANGE CONDITIONS, ACCUMULATION BIAS, HIGH-CONVICTION EXPANSION.",
     "Do not include blockchain verification or external settlement references.",
   ].join("\n");
 }
@@ -607,6 +612,7 @@ function finalizeGeneratedTraceBody(
     confidence: metrics.confidence,
     positionIntent: normalizePositionIntent(generated.positionIntent, metrics.action),
     verdict: buildStructuredVerdict({ ...generated, reasoningSteps }, contributions, input, metrics),
+    traceMetrics: buildTraceMetrics(metrics),
   };
 }
 
@@ -619,7 +625,7 @@ function buildStructuredVerdict(
   const metrics = existingMetrics ?? computeCommitteeScore(generated, contributions, input);
   return {
     action: metrics.action,
-    summary: `${metrics.action} at ${metrics.score}/100. Alignment ${Math.round(metrics.agreement * 100)}%, evidence ${Math.round(metrics.evidenceQuality * 100)}%, contradiction ${Math.round(metrics.disagreement * 100)}%, risk pressure ${Math.round(metrics.riskAsymmetry * 100)}%.`,
+    summary: `${metrics.action}. Alignment ${qualitativeState(metrics.agreement)}; evidence ${qualitativeState(metrics.evidenceQuality)}; pressure ${qualitativeState(metrics.riskAsymmetry)}; catalyst support ${qualitativeState(metrics.catalystStrength)}.`,
     confidence: metrics.confidence,
     score: metrics.score,
     primaryDrivers: buildPrimaryDrivers(generated, contributions, metrics),
@@ -766,6 +772,63 @@ function buildInvalidationDrivers(
   ], 4);
 }
 
+function buildTraceMetrics(metrics: CommitteeScoreMetrics): ReasoningTrace["traceMetrics"] {
+  return {
+    marketRegime: regimeLabel(metrics),
+    liquidityState: liquidityLabel(metrics),
+    volatilityState: volatilityLabel(metrics.volatilityRisk),
+    alignment: roundMetric(metrics.agreement),
+    pressure: roundMetric(Math.max(metrics.riskAsymmetry, metrics.uncertainty)),
+    catalystStrength: roundMetric(metrics.catalystStrength),
+    disagreement: roundMetric(metrics.disagreement),
+    convictionTemperature: convictionTemperature(metrics.score),
+  };
+}
+
+function accessTierFromVerdict(verdict: NonNullable<ReasoningTrace["verdict"]>): ReasoningTrace["accessTier"] {
+  if (verdict.action === "HIGH-CONVICTION EXPANSION" || verdict.score >= 81) return "institutional";
+  if (verdict.score >= 61 || verdict.action === "ACCUMULATION BIAS") return "premium";
+  return "public";
+}
+
+function qualitativeState(value: number): string {
+  if (value >= 0.75) return "high";
+  if (value >= 0.5) return "moderate";
+  if (value >= 0.25) return "thin";
+  return "low";
+}
+
+function convictionTemperature(score: number): string {
+  if (score <= 20) return "cold";
+  if (score <= 40) return "defensive";
+  if (score <= 60) return "balanced";
+  if (score <= 80) return "warming";
+  return "hot";
+}
+
+function regimeLabel(metrics: CommitteeScoreMetrics): string {
+  if (metrics.riskAsymmetry >= 0.7 || metrics.volatilityRisk >= 0.7) return "stress";
+  if (metrics.disagreement >= 0.55 || metrics.neutralPressure >= 0.45) return "two-way";
+  if (metrics.catalystStrength >= 0.65 && metrics.agreement >= 0.65) return "expansion";
+  return "selective";
+}
+
+function liquidityLabel(metrics: CommitteeScoreMetrics): string {
+  if (metrics.uncertainty >= 0.7 || metrics.riskAsymmetry >= 0.7) return "fragile";
+  if (metrics.evidenceQuality >= 0.65 && metrics.agreement >= 0.6) return "supportive";
+  return "mixed";
+}
+
+function volatilityLabel(value: number): string {
+  if (value >= 0.7) return "elevated";
+  if (value >= 0.4) return "active";
+  return "contained";
+}
+
+function roundMetric(value: number): number {
+  return Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+}
+
 function contributionLines(contributions: AgentContribution[]): string[] {
   return dedupeTextList(contributions
     .map((contribution) => `${contribution.agent}: ${contribution.inference}`)
@@ -814,36 +877,22 @@ function marketVolatilityRisk(input: RunAgentRequest): number {
 }
 
 function positioningActionFromMetrics(input: PositioningDecisionInput): VerdictAction {
-  const side = input.netDirection > 0 ? "long" : input.netDirection < 0 ? "short" : input.side;
   const blockedByRisk = input.riskAsymmetry >= 0.72 || input.riskOffPressure >= 0.4;
   const conflicted = input.contradictionIntensity >= 0.55 || input.neutralPressure >= 0.55;
 
-  if (input.score <= 24 || (conflicted && input.score < 45)) return "Conviction Breakdown";
-  if (input.score <= 36 || input.uncertainty >= 0.72) return "No Clear Edge";
-  if (side === "neutral" || input.directionalConviction < 0.25) return "Neutral / Wait";
-
-  if (side === "short") {
-    if (blockedByRisk || input.score < 58) return "High-Risk Fade";
-    return "Tactical Short";
-  }
-
-  if (blockedByRisk && input.score < 70) return "Watchlist Long";
-  if (input.score >= 82 && input.agreement >= 0.72 && input.catalystStrength >= 0.45 && input.riskAsymmetry < 0.55) {
-    return "Aggressive Long";
-  }
-  if (input.score >= 62 && input.directionalConviction >= 0.38) return "Tactical Long";
-  return "Watchlist Long";
+  if (input.score <= 20 || (conflicted && input.score < 32) || input.uncertainty >= 0.82) return "AVOID EXPOSURE";
+  if (input.score <= 40 || blockedByRisk || input.riskAsymmetry >= 0.6) return "DEFENSIVE POSITIONING";
+  if (input.score <= 60 || input.directionalConviction < 0.3 || input.neutralPressure >= 0.45) return "RANGE CONDITIONS";
+  if (input.score <= 80 || input.catalystStrength < 0.45 || input.agreement < 0.6) return "ACCUMULATION BIAS";
+  return "HIGH-CONVICTION EXPANSION";
 }
 
 function isConstructiveVerdict(verdict?: VerdictAction): boolean {
-  return verdict === "Aggressive Long" || verdict === "Tactical Long" || verdict === "Watchlist Long";
+  return verdict === "ACCUMULATION BIAS" || verdict === "HIGH-CONVICTION EXPANSION";
 }
 
 function isRiskOffVerdict(verdict?: VerdictAction): boolean {
-  return verdict === "Tactical Short" ||
-    verdict === "High-Risk Fade" ||
-    verdict === "Conviction Breakdown" ||
-    verdict === "No Clear Edge";
+  return verdict === "AVOID EXPOSURE" || verdict === "DEFENSIVE POSITIONING";
 }
 
 function contradictionScore(contributions: AgentContribution[]): number {
@@ -933,18 +982,13 @@ function normalizeConfidence(value: unknown): ReasoningTrace["confidence"] {
 
 function normalizeVerdictAction(value: unknown): NonNullable<ReasoningTrace["verdict"]>["action"] {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (!normalized) return "No Clear Edge";
-  if (normalized.includes("aggressive") && normalized.includes("long")) return "Aggressive Long";
-  if (normalized.includes("tactical") && normalized.includes("long")) return "Tactical Long";
-  if (normalized.includes("watchlist") || (normalized.includes("long") && normalized.includes("wait"))) return "Watchlist Long";
-  if (normalized.includes("neutral") || normalized.includes("wait") || normalized.includes("stand aside")) return "Neutral / Wait";
-  if (normalized.includes("tactical") && normalized.includes("short")) return "Tactical Short";
-  if (normalized.includes("high-risk") || normalized.includes("fade")) return "High-Risk Fade";
-  if (normalized.includes("conviction") && normalized.includes("breakdown")) return "Conviction Breakdown";
-  if (normalized.includes("no clear") || normalized.includes("no edge") || normalized.includes("reject") || normalized.includes("avoid")) return "No Clear Edge";
-  if (normalized.includes("long") || normalized.includes("buy") || normalized.includes("add")) return "Tactical Long";
-  if (normalized.includes("short") || normalized.includes("sell")) return "Tactical Short";
-  return "No Clear Edge";
+  if (!normalized) return "RANGE CONDITIONS";
+  if (normalized.includes("avoid") || normalized.includes("no exposure") || normalized.includes("risk off")) return "AVOID EXPOSURE";
+  if (normalized.includes("defensive") || normalized.includes("protect") || normalized.includes("hedge")) return "DEFENSIVE POSITIONING";
+  if (normalized.includes("range") || normalized.includes("wait") || normalized.includes("neutral") || normalized.includes("stand aside")) return "RANGE CONDITIONS";
+  if (normalized.includes("accum") || normalized.includes("build") || normalized.includes("tactical long") || normalized.includes("watchlist") || normalized.includes("long")) return "ACCUMULATION BIAS";
+  if (normalized.includes("high-conv") || normalized.includes("high conviction") || normalized.includes("conviction expansion") || normalized.includes("aggressive") || normalized.includes("breakout")) return "HIGH-CONVICTION EXPANSION";
+  return "RANGE CONDITIONS";
 }
 
 function normalizeStance(
@@ -955,8 +999,8 @@ function normalizeStance(
   if (normalized.includes("short") || normalized.includes("bear") || normalized.includes("downside")) return "short";
   if (normalized.includes("long") || normalized.includes("bull") || normalized.includes("upside")) return "long";
   if (normalized.includes("neutral") || normalized.includes("flat") || normalized.includes("wait")) return "neutral";
-  if (verdict === "Aggressive Long" || verdict === "Tactical Long" || verdict === "Watchlist Long") return "long";
-  if (verdict === "Tactical Short" || verdict === "High-Risk Fade") return "short";
+  if (verdict === "HIGH-CONVICTION EXPANSION" || verdict === "ACCUMULATION BIAS") return "long";
+  if (verdict === "AVOID EXPOSURE" || verdict === "DEFENSIVE POSITIONING") return "neutral";
   return "neutral";
 }
 
@@ -1044,11 +1088,11 @@ function normalizePositionIntent(
   intent: ReasoningTrace["positionIntent"],
   action: VerdictAction,
 ): ReasoningTrace["positionIntent"] {
-  const side = action === "Tactical Short" || action === "High-Risk Fade"
-    ? "short"
-    : action === "Aggressive Long" || action === "Tactical Long" || action === "Watchlist Long"
-      ? "long"
-      : "neutral";
+  const side = action === "HIGH-CONVICTION EXPANSION" || action === "ACCUMULATION BIAS"
+    ? (intent.side === "neutral" ? "long" : intent.side)
+    : action === "AVOID EXPOSURE" || action === "DEFENSIVE POSITIONING"
+      ? (intent.side === "short" ? "short" : "neutral")
+      : intent.side;
 
   return {
     ...intent,

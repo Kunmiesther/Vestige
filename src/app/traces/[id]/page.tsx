@@ -3,13 +3,21 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { getTrace, ApiError } from '@/lib/api'
-import { formatDate, formatRelative, confidenceLabel, sideLabel, sideColor, truncateHash } from '@/lib/trace-utils'
-import type { ReasoningTrace, ConfidenceLevel, TraceStatus, ReasoningStep } from '@/backend/shared/types/trace'
-
-function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
-  return <span className={`conviction conviction-${level}`}>{confidenceLabel(level)}</span>
-}
+import { getPremiumTrace, ApiError } from '@/lib/api'
+import {
+  formatDate,
+  formatRelative,
+  sideLabel,
+  sideColor,
+  truncateHash,
+  traceAccessLabel,
+  traceUnlockPrice,
+  traceUnlockCount,
+  deriveAuditMetrics,
+  metricLabel,
+} from '@/lib/trace-utils'
+import type { ReasoningTrace, TraceStatus, ReasoningStep, TracePaymentReceipt } from '@/backend/shared/types/trace'
+import type { PaymentChallenge, PremiumTracePreview } from '@/backend/shared/types/api'
 
 function StatusBadge({ status }: { status: TraceStatus }) {
   const map: Record<TraceStatus, { cls: string; label: string }> = {
@@ -26,6 +34,19 @@ function LocalAuditBadge() {
     <span className="audit-badge">
       Local audit trail
     </span>
+  )
+}
+
+function AccessBadge({ label }: { label: string }) {
+  const premium = label !== 'PUBLIC'
+  return (
+    <span style={{
+      fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
+      textTransform: 'uppercase', color: premium ? 'var(--lime)' : 'var(--text-secondary)',
+      background: premium ? 'var(--lime-dim)' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${premium ? 'var(--lime-border)' : 'var(--border)'}`,
+      padding: '3px 10px', borderRadius: 3,
+    }}>{label}</span>
   )
 }
 
@@ -83,6 +104,11 @@ export default function TraceDetailPage() {
   const traceId = typeof params.id === 'string' ? params.id : ''
 
   const [trace, setTrace] = useState<ReasoningTrace | null>(null)
+  const [paymentRequired, setPaymentRequired] = useState<PaymentChallenge | null>(null)
+  const [tracePreview, setTracePreview] = useState<PremiumTracePreview | null>(null)
+  const [paymentHeader, setPaymentHeader] = useState('')
+  const [paymentReceipt, setPaymentReceipt] = useState<TracePaymentReceipt | undefined>(undefined)
+  const [unlocking, setUnlocking] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -91,11 +117,52 @@ export default function TraceDetailPage() {
   useEffect(() => {
     if (!traceId) return
     setLoading(true); setError(null)
-    getTrace(traceId)
-      .then(setTrace)
+    getPremiumTrace(traceId)
+      .then(result => {
+        if (result.status === 'payment_required') {
+          setPaymentRequired(result.paymentRequired)
+          setTracePreview(result.tracePreview ?? null)
+          setTrace(null)
+          return
+        }
+        setTrace(result.trace)
+        setPaymentReceipt(result.receipt)
+        setPaymentRequired(null)
+        setTracePreview(null)
+      })
       .catch(e => setError(e instanceof ApiError ? e.message : 'Trace not found.'))
       .finally(() => setLoading(false))
   }, [traceId])
+
+  async function unlockTrace() {
+    if (!traceId || !paymentHeader.trim()) {
+      setActionError('x402 payment authorization is required.')
+      return
+    }
+
+    setUnlocking(true)
+    setActionError(null)
+    setActionStatus('Verifying USDC payment...')
+    try {
+      const result = await getPremiumTrace(traceId, paymentHeader.trim())
+      if (result.status === 'payment_required') {
+        setPaymentRequired(result.paymentRequired)
+        setTracePreview(result.tracePreview ?? tracePreview)
+        setActionError('Payment was not accepted by the x402 facilitator.')
+        return
+      }
+      setTrace(result.trace)
+      setPaymentReceipt(result.receipt)
+      setPaymentRequired(null)
+      setTracePreview(null)
+      setActionStatus('Trace unlocked')
+      window.setTimeout(() => setActionStatus(null), 1800)
+    } catch (e) {
+      setActionError(e instanceof ApiError ? `${e.code}: ${e.message}` : 'Payment verification failed.')
+    } finally {
+      setUnlocking(false)
+    }
+  }
 
   async function copyText(text: string, label: string) {
     setActionError(null)
@@ -124,6 +191,110 @@ export default function TraceDetailPage() {
 
   if (loading) return <Skeleton />
 
+  if (paymentRequired && !trace) return (
+    <main style={{ padding: '48px 32px 100px', maxWidth: 980, margin: '0 auto' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 36,
+        fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
+        textTransform: 'uppercase', color: 'var(--text-tertiary)',
+      }}>
+        <Link href="/traces" style={{ color: 'var(--text-tertiary)', transition: 'color .15s' }}>Traces</Link>
+        <span>/</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{tracePreview?.assetSymbol ?? 'Premium'}</span>
+        <span>/</span>
+        <span>{truncateHash(traceId, 18)}</span>
+      </div>
+
+      <div className="card" style={{ padding: '28px 30px', borderColor: 'var(--lime-border)', background: 'rgba(10,10,20,0.92)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+          <AccessBadge label={(tracePreview?.accessTier ?? 'premium').toUpperCase()} />
+          <span className="audit-badge">x402 gated trace</span>
+          {tracePreview?.unlockCount !== undefined && (
+            <span className="mono-label" style={{ marginBottom: 0, color: 'var(--text-tertiary)' }}>
+              {tracePreview.unlockCount} paid unlock{tracePreview.unlockCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+
+        <h1 style={{
+          fontFamily: 'var(--font-display)', fontSize: 'clamp(24px,4vw,42px)',
+          fontWeight: 700, textTransform: 'uppercase', letterSpacing: '-0.01em',
+          lineHeight: 1.05, color: 'var(--text-primary)', marginBottom: 14,
+        }}>{tracePreview?.market ?? 'Premium reasoning trace'}</h1>
+
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.8, fontWeight: 300, marginBottom: 24 }}>
+          Access requires a settled USDC payment. Vestige unlocks the full audit trail only after the x402 facilitator verifies and settles the payment authorization.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 1, background: 'var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 22 }}>
+          {[
+            { k: 'Price', v: `${paymentRequired.amount} ${paymentRequired.asset}` },
+            { k: 'Network', v: paymentRequired.network },
+            { k: 'Status', v: unlocking ? 'verifying' : 'payment required' },
+          ].map(item => (
+            <div key={item.k} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
+              <div className="mono-label" style={{ marginBottom: 5 }}>{item.k}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: item.k === 'Price' ? 'var(--lime)' : 'var(--text-primary)' }}>{item.v}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div>
+            <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>x402 payment authorization</label>
+            <textarea
+              value={paymentHeader}
+              onChange={event => setPaymentHeader(event.target.value)}
+              disabled={unlocking}
+              rows={4}
+              placeholder="Paste signed x-payment header"
+              style={{
+                width: '100%', background: 'rgba(5,5,7,0.8)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11,
+                color: 'var(--text-primary)', outline: 'none', resize: 'vertical', lineHeight: 1.7,
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              onClick={unlockTrace}
+              disabled={unlocking}
+              className="btn-primary"
+              style={{ opacity: unlocking ? 0.7 : 1, cursor: unlocking ? 'not-allowed' : 'pointer' }}
+            >
+              {unlocking ? 'Verifying payment...' : `Unlock Trace - ${paymentRequired.amount} ${paymentRequired.asset}`}
+            </button>
+            <button onClick={() => copyText(JSON.stringify(paymentRequired, null, 2), 'Payment challenge')} className="btn-ghost">
+              Copy challenge
+            </button>
+          </div>
+
+          {actionError && (
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember)',
+              background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.22)',
+              borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+            }}>{actionError}</div>
+          )}
+
+          {actionStatus && (
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)',
+              background: 'var(--violet-dim)', border: '1px solid var(--violet-border)',
+              borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+            }}>{actionStatus}</div>
+          )}
+
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', lineHeight: 1.7, wordBreak: 'break-all' }}>
+            Pay to {paymentRequired.payTo} / resource {paymentRequired.resource}
+          </div>
+        </div>
+      </div>
+    </main>
+  )
+
   if (error || !trace) return (
     <main style={{ padding: '80px 32px', maxWidth: 1200, margin: '0 auto', textAlign: 'center' }}>
       <div className="mono-label" style={{ color: 'var(--ember)', marginBottom: 12 }}>Error</div>
@@ -137,6 +308,9 @@ export default function TraceDetailPage() {
   const markdown = traceToMarkdown(trace, steps)
   const json = JSON.stringify(trace, null, 2)
   const summary = traceToSummary(trace)
+  const auditMetrics = deriveAuditMetrics(trace)
+  const receipts = uniqueReceipts([...(trace.paymentReceipts ?? []), ...(paymentReceipt ? [paymentReceipt] : [])])
+  const unlockCount = Math.max(traceUnlockCount(trace), receipts.length)
 
   return (
     <main style={{ padding: '40px 32px 100px', maxWidth: 1200, margin: '0 auto' }}>
@@ -159,9 +333,10 @@ export default function TraceDetailPage() {
             textTransform: 'uppercase', color: 'var(--violet)', background: 'var(--violet-dim)',
             border: '1px solid var(--violet-border)', padding: '3px 10px', borderRadius: 3,
           }}>{trace.assetSymbol}</span>
-          <ConfidenceBadge level={trace.confidence} />
+          <AccessBadge label={traceAccessLabel(trace)} />
           <StatusBadge status={trace.status} />
           <LocalAuditBadge />
+          {receipts.length > 0 && <span className="audit-badge">Paid access</span>}
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
             marginLeft: 'auto', letterSpacing: '0.04em',
@@ -330,14 +505,19 @@ export default function TraceDetailPage() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="card" style={{ padding: '18px 20px' }}>
-            <div className="mono-label" style={{ marginBottom: 14 }}>At a glance</div>
+            <div className="mono-label" style={{ marginBottom: 14 }}>Audit lens</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {[
-                { k: 'Conviction', v: <ConfidenceBadge level={trace.confidence} /> },
-                { k: 'Side', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: sideColor(trace.positionIntent.side), textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sideLabel(trace.positionIntent.side)}</span> },
-                { k: 'Horizon', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{trace.positionIntent.timeHorizon}</span> },
-                { k: 'Status', v: <StatusBadge status={trace.status} /> },
-                { k: 'Steps', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{steps.length} reasoning steps</span> },
+                { k: 'Positioning', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: sideColor(trace.positionIntent.side), textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sideLabel(trace.positionIntent.side)}</span> },
+                { k: 'State', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{trace.verdict?.action ?? 'RANGE CONDITIONS'}</span> },
+                { k: 'Regime', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.marketRegime}</span> },
+                { k: 'Liquidity', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.liquidityState}</span> },
+                { k: 'Volatility', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.volatilityState}</span> },
+                { k: 'Alignment', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.alignment)}</span> },
+                { k: 'Pressure', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.pressure)}</span> },
+                { k: 'Catalyst', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.catalystStrength)}</span> },
+                { k: 'Disagreement', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.disagreement)}</span> },
+                { k: 'Conviction', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.convictionTemperature}</span> },
               ].map(row => (
                 <div key={row.k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                   <span className="mono-label" style={{ marginBottom: 0, flexShrink: 0 }}>{row.k}</span>
@@ -356,6 +536,12 @@ export default function TraceDetailPage() {
                   {formatDate(trace.createdAt)}
                 </div>
               </div>
+              <div>
+                <div className="mono-label" style={{ marginBottom: 3 }}>Unlocks</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>
+                  {unlockCount} paid access event{unlockCount === 1 ? '' : 's'}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -363,6 +549,7 @@ export default function TraceDetailPage() {
             <div className="mono-label" style={{ marginBottom: 14 }}>Audit trail</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <LocalAuditBadge />
+              <AccessBadge label={traceAccessLabel(trace)} />
 
               <div>
                 <div className="mono-label" style={{ marginBottom: 4 }}>Trace ID</div>
@@ -415,12 +602,6 @@ export default function TraceDetailPage() {
                     {trace.verdict.action}
                   </span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                  <span className="mono-label">Score</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)' }}>
-                    {trace.verdict.score}/100
-                  </span>
-                </div>
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                   {trace.verdict.summary}
                 </p>
@@ -452,6 +633,34 @@ export default function TraceDetailPage() {
             </div>
           )}
 
+          {receipts.length > 0 && (
+            <div className="card" style={{ padding: '18px 20px' }}>
+              <div className="mono-label" style={{ marginBottom: 14 }}>Transaction receipt</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {receipts.map(receipt => (
+                  <div key={receipt.receiptId} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 10 }}>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Receipt</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.7, wordBreak: 'break-all' }}>
+                      {receipt.receiptId}
+                    </div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Amount</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)' }}>{receipt.amount} {receipt.asset}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Network</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{receipt.network}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Unlocked</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{formatDate(receipt.unlockedAt)}</div>
+                    {receipt.txHash && (
+                      <>
+                        <span className="mono-label" style={{ marginBottom: 0 }}>Tx hash</span>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{receipt.txHash}</div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <Link href="/traces" className="btn-ghost" style={{ justifyContent: 'center', width: '100%' }}>
             All traces
           </Link>
@@ -471,10 +680,11 @@ export default function TraceDetailPage() {
 }
 
 function traceToSummary(trace: ReasoningTrace): string {
-  const verdict = trace.verdict ? `${trace.verdict.action} (${trace.verdict.score}/100)` : `${trace.confidence} conviction`
+  const verdict = trace.verdict ? trace.verdict.action : deriveAuditMetrics(trace).convictionTemperature
   return [
     `${trace.assetSymbol}: ${trace.market}`,
     `Verdict: ${verdict}`,
+    `Access: ${traceAccessLabel(trace)}${trace.premium ? ` - ${traceUnlockPrice(trace)} USDC` : ''}`,
     `Side: ${sideLabel(trace.positionIntent.side)}; horizon: ${trace.positionIntent.timeHorizon}`,
     `Thesis: ${trace.thesis}`,
   ].join('\n')
@@ -488,15 +698,17 @@ function traceToMarkdown(trace: ReasoningTrace, steps: ReasoningStep[]): string 
     `- Market: ${trace.market}`,
     `- Created: ${formatDate(trace.createdAt)}`,
     `- Status: ${trace.status}`,
-    `- Confidence: ${confidenceLabel(trace.confidence)}`,
+    `- Access tier: ${traceAccessLabel(trace)}`,
+    `- Conviction state: ${deriveAuditMetrics(trace).convictionTemperature}`,
     `- Positioning: ${trace.verdict?.action ?? sideLabel(trace.positionIntent.side)}`,
+    `- Paid unlocks: ${traceUnlockCount(trace)}`,
     '',
     '## Thesis',
     trace.thesis,
     '',
     '## Verdict',
     trace.verdict
-      ? `${trace.verdict.action} (${trace.verdict.score}/100): ${trace.verdict.summary}`
+      ? `${trace.verdict.action}: ${trace.verdict.summary}`
       : 'No structured verdict recorded.',
     '',
     '## Reasoning Chain',
@@ -516,4 +728,14 @@ function traceToMarkdown(trace: ReasoningTrace, steps: ReasoningStep[]): string 
     ...(trace.catalysts.length ? trace.catalysts.map((item) => `- ${item}`) : ['- None recorded.']),
   ]
   return lines.join('\n')
+}
+
+function uniqueReceipts(receipts: TracePaymentReceipt[]): TracePaymentReceipt[] {
+  const seen = new Set<string>()
+  return receipts.filter(receipt => {
+    const key = receipt.receiptId || receipt.txHash || receipt.unlockedAt
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
