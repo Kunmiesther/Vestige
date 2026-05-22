@@ -1,4 +1,4 @@
-import type { ReasoningTrace, ConfidenceLevel, TraceStatus, PositionSide, TraceAccessTier } from '@/backend/shared/types/trace'
+import type { ReasoningTrace, TraceStatus, PositionSide, TraceAccessTier } from '@/backend/shared/types/trace'
 
 export function formatRelative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -23,21 +23,22 @@ export function truncateHash(hash: string, chars = 10): string {
   return `${hash.slice(0, chars)}…${hash.slice(-6)}`
 }
 
-export function confidenceLabel(c: ConfidenceLevel): string {
-  return c.charAt(0).toUpperCase() + c.slice(1)
-}
-
 export function convictionState(trace: ReasoningTrace): string {
   const score = trace.verdict?.score
-  if (trace.traceMetrics?.convictionTemperature) return titleCase(trace.traceMetrics.convictionTemperature)
+  if (trace.verdict?.action) return trace.verdict.action
+  if (trace.traceMetrics?.convictionTemperature) return convictionTemperatureToState(trace.traceMetrics.convictionTemperature)
+  return scoreToConvictionState(score)
+}
+
+export function scoreToConvictionState(score: number | undefined): string {
   if (typeof score === 'number') {
-    if (score <= 20) return 'Cold'
-    if (score <= 40) return 'Defensive'
-    if (score <= 60) return 'Balanced'
-    if (score <= 80) return 'Warming'
-    return 'Hot'
+    if (score <= 20) return 'AVOID EXPOSURE'
+    if (score <= 40) return 'DEFENSIVE POSITIONING'
+    if (score <= 60) return 'RANGE CONDITIONS'
+    if (score <= 80) return 'ACCUMULATION BIAS'
+    return 'HIGH-CONVICTION EXPANSION'
   }
-  return confidenceLabel(trace.confidence)
+  return 'RANGE CONDITIONS'
 }
 
 export function traceAccessTier(trace: ReasoningTrace): TraceAccessTier {
@@ -136,6 +137,16 @@ export function deriveBadgeStatus(trace: ReasoningTrace): 'active' | 'watching' 
 
 function titleCase(value: string): string {
   return value.replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function convictionTemperatureToState(value: string): string {
+  const normalized = value.toLowerCase()
+  if (normalized.includes('cold')) return 'AVOID EXPOSURE'
+  if (normalized.includes('defensive')) return 'DEFENSIVE POSITIONING'
+  if (normalized.includes('balanced')) return 'RANGE CONDITIONS'
+  if (normalized.includes('warming')) return 'ACCUMULATION BIAS'
+  if (normalized.includes('hot')) return 'HIGH-CONVICTION EXPANSION'
+  return titleCase(value)
 }
 
 function clamp(value: number): number {

@@ -91,7 +91,7 @@ export default function HomePage() {
               fontStyle: 'italic',
             }}>
               Vestige stores every reasoning step before entering a position.
-              Thesis, evidence, edge, risks — all on‑chain before the trade.
+              Thesis, evidence, edge, risks - stored as an audit trail before the trade.
               You see the logic. Then you decide.
             </p>
           </div>
@@ -117,9 +117,9 @@ export default function HomePage() {
         }}>
           {[
             { label: 'Open markets', val: 'Live', color: 'var(--text-primary)' },
-            { label: 'Traces on Arc', val: 'Synced', color: 'var(--violet)' },
+            { label: 'Premium traces', val: 'USDC gated', color: 'var(--violet)' },
             { label: 'Agent win rate', val: 'Tracked', color: 'var(--lime)' },
-            { label: 'USDC volume', val: 'On-chain', color: 'var(--text-primary)' },
+            { label: 'USDC unlocks', val: 'Measured', color: 'var(--text-primary)' },
           ].map((s, i) => (
             <div key={s.label} style={{
               padding: '24px 28px',
@@ -213,7 +213,7 @@ export default function HomePage() {
                 },
                 {
                   num: '04',
-                  title: 'Position unfolds on-chain',
+                  title: 'Position stays auditable',
                   body: 'Every status change — watching, entry, exit — is tracked against the reasoning that justified it. No retroactive editing.',
                   color: 'var(--ember)',
                 },
@@ -256,7 +256,7 @@ export default function HomePage() {
         <div style={{ marginBottom: 60 }}>
           <div className="mono-label" style={{ marginBottom: 12 }}>002 — What you see in every trace</div>
           <h2 className="display-md" style={{ color: 'var(--text-primary)' }}>
-            Not confidence scores.<br />
+            Not black-box scores.<br />
             <span style={{ color: 'var(--text-secondary)' }}>Actual reasoning.</span>
           </h2>
         </div>
@@ -270,16 +270,16 @@ export default function HomePage() {
               desc: 'One line. Plain English. The specific mispricing the agent is exploiting.',
             },
             {
-              field: 'Conviction',
+              field: 'Positioning state',
               color: 'var(--violet)',
-              example: 'High — four supporting signals, one contradicting, no major macro catalysts pending',
-              desc: 'Low / Medium / High. No percentages. No false precision.',
+              example: 'ACCUMULATION BIAS - supportive liquidity, unresolved risk drag, catalyst path still active',
+              desc: 'Institutional bands replace raw percentages and false precision.',
             },
             {
               field: 'Reasoning chain',
               color: 'var(--ice)',
-              example: 'Researcher → Risk Manager → Portfolio Manager — each step timestamped and hashed',
-              desc: 'Structured multi-agent reasoning. Every agent\'s output is a separate signed step.',
+              example: 'Macro -> Sentiment -> Technical -> Risk -> Catalyst -> Committee',
+              desc: 'Structured multi-agent reasoning. Every agent output remains a separate specialist step.',
             },
             {
               field: 'What would break this',
@@ -352,7 +352,7 @@ export default function HomePage() {
           marginBottom: 48,
           fontWeight: 300,
         }}>
-          Every position is an open book. Every trace is on-chain.
+          Every position is an open book. Every premium unlock carries a USDC receipt.
         </p>
         <Link href="/dashboard" className="btn-primary" style={{ fontSize: 13, padding: '15px 36px' }}>
           Go to dashboard →

@@ -14,6 +14,7 @@ import {
   traceUnlockCount,
   deriveAuditMetrics,
   convictionState,
+  scoreToConvictionState,
 } from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
 
@@ -521,6 +522,10 @@ export default function DashboardPage() {
   const activeAnalysts = agents.filter(agent => agent.status === 'active').length
   const convictionStates = traces.map(convictionState)
   const dominantConviction = mostCommon(convictionStates) ?? 'No traces'
+  const averageVerdictScore = traces.length > 0
+    ? traces.reduce((sum, trace) => sum + (trace.verdict?.score ?? (trace.confidence === 'high' ? 78 : trace.confidence === 'medium' ? 52 : 28)), 0) / traces.length
+    : undefined
+  const averageConviction = traces.length > 0 ? scoreToConvictionState(averageVerdictScore) : 'No traces'
   const marketRegime = mostCommon(traces.map(trace => deriveAuditMetrics(trace).marketRegime)) ?? 'No regime'
   const highestDemandTrace = traces
     .filter(trace => traceUnlockCount(trace) > 0)
@@ -579,7 +584,7 @@ export default function DashboardPage() {
               {[
                 { label: 'USDC processed', val: totalUsdc.toFixed(2), color: 'var(--lime)' },
                 { label: 'Paid unlocks', val: paidUnlocks, color: 'var(--violet)' },
-                { label: 'Analysts', val: activeAnalysts, color: 'var(--text-primary)' },
+                { label: 'Active analysts', val: activeAnalysts, color: 'var(--text-primary)' },
                 { label: 'Regime', val: marketRegime, color: 'var(--text-secondary)' },
               ].map(s => (
                 <div key={s.label} style={{ background: 'var(--bg-card)', padding: '12px 16px', textAlign: 'center' }}>
@@ -600,6 +605,7 @@ export default function DashboardPage() {
           borderRadius: 'var(--radius-lg)', overflow: 'hidden', marginBottom: 28,
         }}>
           {[
+            { label: 'Average conviction', val: averageConviction },
             { label: 'Conviction state', val: dominantConviction },
             { label: 'Market regime', val: marketRegime },
             { label: 'Highest demand', val: highestDemandTrace ? `${highestDemandTrace.assetSymbol} / ${traceUnlockCount(highestDemandTrace)} unlocks` : 'No paid unlocks yet' },

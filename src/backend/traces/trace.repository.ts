@@ -84,32 +84,70 @@ export class SupabaseTraceRepository implements TraceRepository {
   }
 
   async createTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
-    const { data, error } = await this.supabase
-      .from("reasoning_traces")
-      .insert(toTraceRow(trace))
-      .select("*")
-      .single();
+    const attempts = [true, false];
+    let lastError: unknown = null;
 
-    if (error || !data) {
-      throw new VestigeError(error?.message ?? "Failed to store trace.", "TRACE_STORE_FAILED");
+    for (const includeEconomyMetadata of attempts) {
+      const { data, error } = await this.supabase
+        .from("reasoning_traces")
+        .insert(toTraceRow(trace, includeEconomyMetadata))
+        .select("*")
+        .single();
+
+      if (!error && data) {
+        return mapTraceRow(data);
+      }
+
+      lastError = error;
+      if (!includeEconomyMetadata || !shouldRetryWithoutEconomyMetadata(error)) {
+        break;
+      }
+
+      console.warn("[vestige:trace-repository:economy-metadata-fallback]", {
+        operation: "insert",
+        traceId: trace.id,
+        message: error?.message ?? "unknown error",
+      });
     }
 
-    return mapTraceRow(data);
+    throw new VestigeError(
+      (lastError as { message?: string } | null)?.message ?? "Failed to store trace.",
+      "TRACE_STORE_FAILED",
+    );
   }
 
   async updateTrace(trace: ReasoningTrace): Promise<ReasoningTrace> {
-    const { data, error } = await this.supabase
-      .from("reasoning_traces")
-      .update(toTraceRow(trace))
-      .eq("id", trace.id)
-      .select("*")
-      .single();
+    const attempts = [true, false];
+    let lastError: unknown = null;
 
-    if (error || !data) {
-      throw new VestigeError(error?.message ?? "Failed to update trace.", "TRACE_UPDATE_FAILED");
+    for (const includeEconomyMetadata of attempts) {
+      const { data, error } = await this.supabase
+        .from("reasoning_traces")
+        .update(toTraceRow(trace, includeEconomyMetadata))
+        .eq("id", trace.id)
+        .select("*")
+        .single();
+
+      if (!error && data) {
+        return mapTraceRow(data);
+      }
+
+      lastError = error;
+      if (!includeEconomyMetadata || !shouldRetryWithoutEconomyMetadata(error)) {
+        break;
+      }
+
+      console.warn("[vestige:trace-repository:economy-metadata-fallback]", {
+        operation: "update",
+        traceId: trace.id,
+        message: error?.message ?? "unknown error",
+      });
     }
 
-    return mapTraceRow(data);
+    throw new VestigeError(
+      (lastError as { message?: string } | null)?.message ?? "Failed to update trace.",
+      "TRACE_UPDATE_FAILED",
+    );
   }
 
   async createPosition(position: Position): Promise<Position> {
@@ -390,8 +428,8 @@ function mapFollowRow(row: Record<string, unknown>): Follow {
   };
 }
 
-function toTraceRow(trace: ReasoningTrace): Record<string, unknown> {
-  return {
+function toTraceRow(trace: ReasoningTrace, includeEconomyMetadata = true): Record<string, unknown> {
+  const row: Record<string, unknown> = {
     id: trace.id,
     agent_id: trace.agentId,
     builder_id: trace.builderId,
@@ -409,6 +447,17 @@ function toTraceRow(trace: ReasoningTrace): Record<string, unknown> {
     premium: trace.premium,
     created_at: trace.createdAt,
   };
+
+  if (includeEconomyMetadata) {
+    row.access_tier = trace.accessTier;
+    row.unlock_price_usdc = trace.unlockPriceUsdc;
+    row.unlock_count = trace.unlockCount;
+    row.demand_score = trace.demandScore;
+    row.payment_receipts = trace.paymentReceipts;
+    row.trace_metrics = trace.traceMetrics;
+  }
+
+  return row;
 }
 
 function toPositionRow(position: Position): Record<string, unknown> {
@@ -524,4 +573,32 @@ function asConfidence(value: unknown): ReasoningTrace["confidence"] {
 
 function asPositionSide(value: unknown): Position["side"] {
   return value === "short" || value === "neutral" ? value : "long";
+}
+
+function shouldRetryWithoutEconomyMetadata(error: unknown): boolean {
+  const code = typeof error === "object" &&
+    error &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : "";
+  const message = typeof error === "object" &&
+    error &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+    ? (error as { message: string }).message.toLowerCase()
+    : "";
+
+  if (code === "42703" || code === "PGRST204") return true;
+
+  return (
+    message.includes("column") &&
+    (
+      message.includes("does not exist") ||
+      message.includes("not found") ||
+      message.includes("could not find") ||
+      message.includes("schema cache") ||
+      message.includes("unknown")
+    )
+  );
 }

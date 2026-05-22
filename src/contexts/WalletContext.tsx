@@ -25,6 +25,7 @@ import {
   loadPersistedWallet,
   clearPersistedWallet,
   restoreWalletPortfolioState,
+  creditWalletPortfolioBalance,
   type WalletState,
   type SelfCustodyConnectorId,
 } from '@/lib/wallet'
@@ -36,6 +37,7 @@ interface WalletContextValue extends WalletState {
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
+  applyLocalBalanceCredit: (amount: string) => void
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null)
@@ -78,6 +80,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } catch {
       // Balance refresh is non-critical for wallet connection state.
     }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyLocalBalanceCredit = useCallback((amount: string) => {
+    const current = stateRef.current
+    if (!current.address) return
+    const parsed = Number.parseFloat(amount)
+    if (!Number.isFinite(parsed) || parsed <= 0) return
+
+    creditWalletPortfolioBalance(current.address, amount)
+    const currentBalance = Number.parseFloat(current.balance ?? '0') || 0
+    patch({ balance: (currentBalance + parsed).toFixed(2) })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -307,6 +320,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       switchToArc,
       disconnect,
       refreshBalance,
+      applyLocalBalanceCredit,
     }}>
       {children}
     </WalletContext.Provider>

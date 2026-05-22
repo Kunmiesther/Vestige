@@ -22,6 +22,7 @@ import type {
   CctpQuoteResponse,
   CctpTransferRequest,
   CctpTransferResponse,
+  CctpBridgeStatusResponse,
   ApiErrorResponse,
 } from '@/backend/shared/types/api'
 
@@ -198,6 +199,10 @@ export async function getCctpQuote(request: CctpQuoteRequest): Promise<CctpQuote
   })
 }
 
+export async function getCctpBridgeStatus(): Promise<CctpBridgeStatusResponse> {
+  return apiFetch<CctpBridgeStatusResponse>('/api/bridge/cctp/status')
+}
+
 export async function submitCctpTransfer(request: CctpTransferRequest): Promise<CctpTransferResponse> {
   return apiFetch<CctpTransferResponse>('/api/bridge/cctp/transfer', {
     method: 'POST',
@@ -218,4 +223,5 @@ export type {
   CctpQuoteResponse,
   CctpTransferRequest,
   CctpTransferResponse,
+  CctpBridgeStatusResponse,
 }

@@ -155,6 +155,7 @@ export interface WalletActions {
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
+  applyLocalBalanceCredit: (amount: string) => void
 }
 
 class CircleWalletOperationError extends Error {
@@ -777,6 +778,28 @@ export function saveWalletWatchlist(address: string, symbols: string[]): string[
     localStorage.setItem(watchlistKey(address), JSON.stringify(normalized))
   } catch {}
   return normalized
+}
+
+export function creditWalletPortfolioBalance(address: string, amount: string): WalletPortfolioState | null {
+  const numericAmount = Number.parseFloat(amount)
+  if (!address || !Number.isFinite(numericAmount) || numericAmount <= 0) return null
+  const existing = loadWalletPortfolioState(address)
+  const existingBalance = existing?.exposure.usdcBalance ?? 0
+  const updatedBalance = existingBalance + numericAmount
+  const now = new Date().toISOString()
+  return persistWalletPortfolioState({
+    walletAddress: address,
+    walletType: existing?.walletType ?? 'circle',
+    walletId: existing?.walletId,
+    holdings: [{ symbol: 'USDC', amount: updatedBalance.toFixed(2), source: existing?.walletType === 'injected' ? 'rpc' : 'circle' }],
+    watchlist: existing?.watchlist ?? [],
+    exposure: {
+      usdcBalance: updatedBalance,
+      trackedAssets: existing?.exposure.trackedAssets ?? existing?.watchlist.length ?? 0,
+      openPositions: existing?.exposure.openPositions ?? 0,
+    },
+    updatedAt: now,
+  })
 }
 
 export function loadCircleSession(): CircleSession | null {

@@ -3,12 +3,17 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { listTraces, ApiError } from '@/lib/api'
-import { formatRelative, formatDate, statusLabel, convictionState } from '@/lib/trace-utils'
+import { formatRelative, formatDate, statusLabel, convictionState, traceAccessLabel } from '@/lib/trace-utils'
 import type { ReasoningTrace, TraceStatus } from '@/backend/shared/types/trace'
 
 function StateBadge({ trace }: { trace: ReasoningTrace }) {
   const label = trace.verdict?.action ?? convictionState(trace)
   return <span className={`conviction conviction-${trace.confidence}`}>{label}</span>
+}
+
+function AccessBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = traceAccessLabel(trace)
+  return <span className={`conviction ${label === 'PUBLIC' ? 'conviction-low' : label === 'PREMIUM' ? 'conviction-medium' : 'conviction-high'}`}>{label}</span>
 }
 
 function StatusBadge({ status }: { status: TraceStatus }) {
@@ -117,10 +122,10 @@ export default function TracesPage() {
 
       {/* Column headers */}
       <div style={{
-        display: 'grid', gridTemplateColumns: '60px 1fr 110px 100px 90px 100px',
+        display: 'grid', gridTemplateColumns: '60px 1fr 110px 92px 100px 90px 100px',
         gap: 12, padding: '6px 20px', marginBottom: 6,
       }} className="hide-mobile">
-        {['Asset','Market','State','Status','Age',''].map(h => (
+        {['Asset','Market','State','Access','Status','Age',''].map(h => (
           <div key={h} className="mono-label">{h}</div>
         ))}
       </div>
@@ -154,7 +159,7 @@ export default function TracesPage() {
               <div className="card" style={{ padding: '16px 20px', cursor: 'pointer' }}>
                 {/* Desktop */}
                 <div style={{
-                  display: 'grid', gridTemplateColumns: '60px 1fr 110px 100px 90px 100px',
+                  display: 'grid', gridTemplateColumns: '60px 1fr 110px 92px 100px 90px 100px',
                   gap: 12, alignItems: 'center',
                 }} className="hide-mobile">
                   <span style={{
@@ -171,6 +176,7 @@ export default function TracesPage() {
                     </div>
                   </div>
                   <StateBadge trace={trace} />
+                  <AccessBadge trace={trace} />
                   <StatusBadge status={trace.status} />
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
                     {formatRelative(trace.createdAt)}
@@ -184,6 +190,7 @@ export default function TracesPage() {
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)', background: 'var(--violet-dim)', border: '1px solid var(--violet-border)', padding: '2px 7px', borderRadius: 3 }}>{trace.assetSymbol}</span>
                       <StateBadge trace={trace} />
+                      <AccessBadge trace={trace} />
                       <StatusBadge status={trace.status} />
                     </div>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>{formatRelative(trace.createdAt)}</span>

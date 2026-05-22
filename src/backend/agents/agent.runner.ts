@@ -317,6 +317,8 @@ export class DefaultAgentRunner implements AgentRunner {
             "confidence must be exactly low, medium, or high.",
             "reasoning must be concise, high-signal, and specialized to this agent's mandate.",
             "Do not repeat another discipline's evidence unless you are explicitly challenging it.",
+            "Keep reasoning to 2-3 short sentences.",
+            "Use 2-4 evidence items only. Each item must be unique, concrete, and domain-specific.",
             "key_risks and opportunities must cite supplied live market data, headline context, or the explicit absence of a required signal.",
             "recommendation must be concrete positioning guidance from this agent's perspective.",
             "Natural disagreement is preferred over forced consensus when evidence conflicts.",
@@ -410,7 +412,7 @@ function normalizeAgentContribution(
   ) || firstSentence(reasoning) || `${profile.name} evaluated the supplied market context from its ${profile.specialty} perspective.`;
   const inference = normalizeText(
     pickFirst(record, ["inference", "implication", "conclusion", "takeaway"]),
-  ) || recommendation || reasoning || `${profile.name} recommends ${verdict.toLowerCase()} with ${confidence} confidence.`;
+  ) || recommendation || reasoning || `${profile.name} recommends ${verdict.toLowerCase()} from its specialist mandate.`;
 
   const keyRisks = normalizeStringArray(
     pickFirst(record, ["key_risks", "risks", "risk", "downside", "invalidation"]),
@@ -468,6 +470,7 @@ function buildSynthesisPrompt(agent: Agent): string {
     "Surface disagreement clearly. Explain why agents disagree instead of smoothing dissent into consensus.",
     "Merge overlapping evidence and avoid repeating the same bullet across agents or synthesis.",
     "Each reasoning step must represent a distinct specialist perspective or committee debate point.",
+    "Use the fewest words that preserve the committee logic. Prefer unique evidence over long explanation.",
     JSON_ONLY_RESPONSE_RULES,
     "The JSON object must exactly match this shape:",
     JSON.stringify({
@@ -513,13 +516,14 @@ function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAge
     constraints: {
       verdict: `Use one of: ${POSITIONING_ACTIONS.join(", ")}. Prefer the most precise positioning label for your own discipline.`,
       confidence: "Return low, medium, or high only. Normalize uncertainty into one of these labels.",
-      reasoning: "2-4 concise sentences. Explain why, not just what. Keep it specialist-specific.",
-      key_risks: "1-6 specific risks, including missing-data risks when relevant.",
-      opportunities: "1-6 specific catalysts/opportunities/positive signals.",
+      reasoning: "2-3 concise sentences. Explain why, not just what. Keep it specialist-specific.",
+      key_risks: "1-4 specific risks, including missing-data risks when relevant.",
+      opportunities: "1-4 specific catalysts/opportunities/positive signals.",
       recommendation: "Concrete positioning guidance from your domain's perspective.",
       specialization: agentSpecializationDirective(profile),
       disagreement: "Do not force consensus. If your domain contradicts the apparent trade, state the contradiction directly.",
       avoid_generic: "Avoid broad portfolio commentary unless your agent role specifically owns that risk.",
+      repetition: "Do not repeat the same evidence phrase across bullets or reuse another agent's unique evidence unless you're rebutting it.",
       json_only: "Return no markdown and no text outside the JSON object.",
     },
   });
@@ -570,7 +574,7 @@ function synthesizeFromContributions(input: RunAgentRequest, contributions: Agen
     ? `${input.assetSymbol.toUpperCase()} at ${input.context.marketSnapshot.price} ${input.context.marketSnapshot.quoteAsset} with ${input.context.marketSnapshot.change24hPercent ?? "unknown"}% 24h change from ${input.context.marketSnapshot.source}`
     : `live ${input.assetSymbol.toUpperCase()} market context was requested but no snapshot was available`;
   const fallbackBody: GeneratedTraceBody = {
-    thesis: `${input.assetSymbol.toUpperCase()} screens ${side} with ${confidence} conviction after five specialist reviews. Market input: ${marketData}. Vote split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral; dissent is retained in the audit trail.`,
+    thesis: `${input.assetSymbol.toUpperCase()} screens ${side} after five specialist reviews. Market input: ${marketData}. Vote split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral; dissent is retained in the audit trail.`,
     reasoningSteps: [
       ...contributions.map((contribution, index) => ({
         order: index,
@@ -751,7 +755,7 @@ function buildPrimaryDrivers(
     .map((item) => `${item.agent}: ${item.recommendation}`);
 
   return dedupeTextList([
-    `Agent alignment: ${Math.round(metrics.agreement * 100)}%; directional conviction: ${Math.round(metrics.directionalConviction * 100)}%; confidence consistency: ${Math.round(metrics.confidenceConsistency * 100)}%.`,
+    `Agent alignment: ${Math.round(metrics.agreement * 100)}%; directional conviction: ${Math.round(metrics.directionalConviction * 100)}%; signal consistency: ${Math.round(metrics.confidenceConsistency * 100)}%.`,
     `Evidence quality: ${Math.round(metrics.evidenceQuality * 100)}%; catalyst strength: ${Math.round(metrics.catalystStrength * 100)}%.`,
     ...generated.catalysts,
     ...constructive,
@@ -1060,6 +1064,7 @@ function normalizeStringArray(value: unknown): string[] {
 
 function normalizeReasoningSteps(steps: ReasoningStep[], contributions: AgentContribution[]): ReasoningStep[] {
   const fallbackByTitle = new Map(contributions.map((item) => [item.agent, item]));
+  const seenEvidence = new Set<string>();
   const sourceSteps = steps.length > 0
     ? steps
     : contributions.map((contribution, index) => ({
@@ -1074,12 +1079,20 @@ function normalizeReasoningSteps(steps: ReasoningStep[], contributions: AgentCon
     .slice(0, 8)
     .map((step, index) => {
       const contribution = fallbackByTitle.get(step.title);
+      const evidence = dedupeTextList(step.evidence ?? contribution?.evidence ?? [], 4)
+        .filter((item) => {
+          const key = evidenceKey(item);
+          if (seenEvidence.has(key)) return false;
+          seenEvidence.add(key);
+          return true;
+        });
+
       return {
         order: index,
         title: limitSentence(step.title || contribution?.agent || `Step ${index + 1}`, 80),
         observation: limitSentence(step.observation || contribution?.observation || "Specialist observation unavailable.", 360),
         inference: limitSentence(step.inference || contribution?.inference || "Inference unavailable.", 420),
-        evidence: dedupeTextList(step.evidence ?? contribution?.evidence ?? [], 4),
+        evidence,
       };
     });
 }

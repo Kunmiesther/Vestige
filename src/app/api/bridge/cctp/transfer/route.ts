@@ -14,7 +14,11 @@ export async function POST(request: Request): Promise<NextResponse<CctpTransferR
       ? 400
       : error instanceof VestigeError && error.code === "CCTP_NOT_CONFIGURED"
         ? 501
-        : error instanceof VestigeError && error.code === "CCTP_WALLET_REQUIRED"
+        : error instanceof VestigeError && (
+            error.code === "CCTP_WALLET_REQUIRED" ||
+            error.code === "CCTP_UNSUPPORTED_CHAIN" ||
+            error.code === "CCTP_UNSUPPORTED_DESTINATION"
+          )
           ? 400
           : 500;
     return NextResponse.json(

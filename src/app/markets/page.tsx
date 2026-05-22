@@ -5,12 +5,17 @@ import Link from 'next/link'
 import { getMarketSnapshot, listPositions, listTraces, syncPositions, ApiError, type MarketSnapshot, type Position } from '@/lib/api'
 import { useWallet } from '@/contexts/WalletContext'
 import { loadWalletWatchlist, saveWalletWatchlist } from '@/lib/wallet'
-import { formatRelative, convictionState, deriveEdge, sideColor, sideLabel } from '@/lib/trace-utils'
+import { formatRelative, convictionState, deriveEdge, sideColor, sideLabel, traceAccessLabel } from '@/lib/trace-utils'
 import type { ReasoningTrace } from '@/backend/shared/types/trace'
 
 function StateBadge({ trace }: { trace: ReasoningTrace }) {
   const label = trace.verdict?.action ?? convictionState(trace)
   return <span className={`conviction conviction-${trace.confidence}`}>{label}</span>
+}
+
+function AccessBadge({ trace }: { trace: ReasoningTrace }) {
+  const label = traceAccessLabel(trace)
+  return <span className={`conviction ${label === 'PUBLIC' ? 'conviction-low' : label === 'PREMIUM' ? 'conviction-medium' : 'conviction-high'}`}>{label}</span>
 }
 
 function Skeleton() {
@@ -260,7 +265,7 @@ export default function MarketsPage() {
                 background: i % 2 === 0 ? 'var(--bg-card)' : 'var(--bg-surface)',
                 padding: '18px 24px', cursor: 'pointer', transition: 'background .15s',
                 borderLeft: `3px solid ${sideColor(trace.positionIntent.side)}`,
-                display: 'grid', gridTemplateColumns: '60px 1fr 100px 100px 80px 80px',
+                display: 'grid', gridTemplateColumns: '60px 1fr 100px 92px 100px 80px 80px',
                 gap: 16, alignItems: 'center',
               }} className="hide-mobile">
                 <span style={{
@@ -277,6 +282,7 @@ export default function MarketsPage() {
                   </div>
                 </div>
                 <StateBadge trace={trace} />
+                <AccessBadge trace={trace} />
                 <span style={{
                   fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase',
                   letterSpacing: '0.06em', color: sideColor(trace.positionIntent.side),
@@ -292,6 +298,7 @@ export default function MarketsPage() {
                 <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)', background: 'var(--violet-dim)', border: '1px solid var(--violet-border)', padding: '2px 7px', borderRadius: 3 }}>{trace.assetSymbol}</span>
                   <StateBadge trace={trace} />
+                  <AccessBadge trace={trace} />
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: sideColor(trace.positionIntent.side), textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sideLabel(trace.positionIntent.side)}</span>
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4 }}>{trace.market}</div>

@@ -6,6 +6,7 @@ import type {
   CctpTransferRequest,
   CctpTransferResponse,
 } from "../shared/types/api";
+import { getCctpBridgeConfig, isSupportedCctpSourceChain } from "@/lib/cctp/config";
 
 const cctpRequestSchema = z.object({
   fromChainId: z.number().int().positive(),
@@ -34,12 +35,14 @@ export class ConfiguredCctpBridgeService implements CctpBridgeService {
   async quote(input: CctpQuoteRequest): Promise<CctpQuoteResponse> {
     const validated = cctpRequestSchema.parse(input);
     this.requireConfigured();
+    validateSupportedRoute(validated.fromChainId, validated.toChainId);
     return this.post<CctpQuoteResponse>("/quote", validated);
   }
 
   async transfer(input: CctpTransferRequest): Promise<CctpTransferResponse> {
     const validated = cctpTransferSchema.parse(input);
     this.requireConfigured();
+    validateSupportedRoute(validated.fromChainId, validated.toChainId);
 
     if (!validated.walletId) {
       throw new VestigeError("Circle wallet id is required to submit a CCTP transfer.", "CCTP_WALLET_REQUIRED");
@@ -49,16 +52,22 @@ export class ConfiguredCctpBridgeService implements CctpBridgeService {
   }
 
   private requireConfigured(): void {
-    if (!this.apiKey || !this.bridgeApiUrl) {
+    const config = getCctpBridgeConfig();
+    if (!this.apiKey || !this.bridgeApiUrl || !config.configured) {
       throw new VestigeError(
-        "CCTP bridge is not configured. Set CIRCLE_API_KEY and CCTP_BRIDGE_API_URL before enabling bridge transfers.",
+        `${config.reason ?? "CCTP bridge is not configured."} Set CIRCLE_API_KEY and CCTP_BRIDGE_API_URL before enabling live bridge transfers.`,
         "CCTP_NOT_CONFIGURED",
       );
     }
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.bridgeApiUrl!.replace(/\/$/, "")}${path}`, {
+    const config = getCctpBridgeConfig();
+    if (!config.apiUrl) {
+      throw new VestigeError("CCTP bridge API URL is invalid.", "CCTP_NOT_CONFIGURED");
+    }
+
+    const response = await fetch(`${config.apiUrl}${path}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -83,4 +92,14 @@ export class ConfiguredCctpBridgeService implements CctpBridgeService {
 
 export function createCctpBridgeService(): CctpBridgeService {
   return new ConfiguredCctpBridgeService();
+}
+
+function validateSupportedRoute(fromChainId: number, toChainId: number): void {
+  const config = getCctpBridgeConfig();
+  if (!isSupportedCctpSourceChain(fromChainId)) {
+    throw new VestigeError("Unsupported CCTP source chain.", "CCTP_UNSUPPORTED_CHAIN");
+  }
+  if (toChainId !== config.destinationChainId) {
+    throw new VestigeError("CCTP destination must be Arc Testnet.", "CCTP_UNSUPPORTED_DESTINATION");
+  }
 }

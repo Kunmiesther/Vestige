@@ -93,6 +93,15 @@ export interface CctpTransferResponse {
   status?: 'queued' | 'submitted' | 'pending' | 'attesting' | 'completed';
 }
 
+export interface CctpBridgeStatusResponse {
+  configured: boolean;
+  reason?: string;
+  apiUrlConfigured: boolean;
+  apiKeyConfigured: boolean;
+  supportedSourceChains: number[];
+  destinationChainId: number;
+}
+
 export interface PaymentChallenge {
   protocol: 'x402';
   resource: string;

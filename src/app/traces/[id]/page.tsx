@@ -15,6 +15,7 @@ import {
   traceUnlockCount,
   deriveAuditMetrics,
   metricLabel,
+  convictionState,
 } from '@/lib/trace-utils'
 import type { ReasoningTrace, TraceStatus, ReasoningStep, TracePaymentReceipt } from '@/backend/shared/types/trace'
 import type { PaymentChallenge, PremiumTracePreview } from '@/backend/shared/types/api'
@@ -63,12 +64,26 @@ function Block({ label, children, accent }: { label: string; children: React.Rea
 }
 
 function StepRoleColor(step: ReasoningStep, total: number): string {
+  const title = step.title.toLowerCase()
+  if (title.includes('macro')) return 'var(--ice)'
+  if (title.includes('sentiment')) return 'var(--violet)'
+  if (title.includes('technical')) return 'var(--lime)'
+  if (title.includes('risk')) return 'var(--ember)'
+  if (title.includes('catalyst')) return 'var(--violet)'
+  if (title.includes('committee') || title.includes('synthesis')) return 'var(--lime)'
   if (step.order === 0) return 'var(--violet)'
   if (step.order === total - 1) return 'var(--lime)'
   return 'var(--ember)'
 }
 
 function StepRoleLabel(step: ReasoningStep, total: number): string {
+  const title = step.title.toLowerCase()
+  if (title.includes('macro')) return 'Macro'
+  if (title.includes('sentiment')) return 'Sentiment'
+  if (title.includes('technical')) return 'Technical'
+  if (title.includes('risk')) return 'Risk'
+  if (title.includes('catalyst')) return 'Catalyst'
+  if (title.includes('committee') || title.includes('synthesis')) return 'Committee'
   if (step.order === 0) return 'Researcher'
   if (step.order === total - 1) return 'Portfolio Manager'
   return 'Risk Manager'
@@ -231,6 +246,7 @@ export default function TraceDetailPage() {
             { k: 'Price', v: `${paymentRequired.amount} ${paymentRequired.asset}` },
             { k: 'Network', v: paymentRequired.network },
             { k: 'Status', v: unlocking ? 'verifying' : 'payment required' },
+            { k: 'Demand', v: String(tracePreview?.demandScore ?? tracePreview?.unlockCount ?? 0) },
           ].map(item => (
             <div key={item.k} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
               <div className="mono-label" style={{ marginBottom: 5 }}>{item.k}</div>
@@ -498,7 +514,7 @@ export default function TraceDetailPage() {
               fontFamily: 'var(--font-editorial)', fontStyle: 'italic',
               fontSize: 16, color: 'var(--text-primary)', lineHeight: 1.8, fontWeight: 300,
             }}>
-              {steps[total - 1]?.inference ?? `${sideLabel(trace.positionIntent.side)} - ${trace.confidence} conviction. ${trace.positionIntent.timeHorizon} horizon.`}
+              {steps[total - 1]?.inference ?? `${sideLabel(trace.positionIntent.side)} positioning. ${convictionState(trace)}. ${trace.positionIntent.timeHorizon} horizon.`}
             </p>
           </div>
         </div>
@@ -518,6 +534,7 @@ export default function TraceDetailPage() {
                 { k: 'Catalyst', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.catalystStrength)}</span> },
                 { k: 'Disagreement', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{metricLabel(auditMetrics.disagreement)}</span> },
                 { k: 'Conviction', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.convictionTemperature}</span> },
+                { k: 'Demand', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{trace.demandScore ?? unlockCount}</span> },
               ].map(row => (
                 <div key={row.k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                   <span className="mono-label" style={{ marginBottom: 0, flexShrink: 0 }}>{row.k}</span>
@@ -540,6 +557,12 @@ export default function TraceDetailPage() {
                 <div className="mono-label" style={{ marginBottom: 3 }}>Unlocks</div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>
                   {unlockCount} paid access event{unlockCount === 1 ? '' : 's'}
+                </div>
+              </div>
+              <div>
+                <div className="mono-label" style={{ marginBottom: 3 }}>Demand</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>
+                  {trace.demandScore ?? unlockCount}
                 </div>
               </div>
             </div>
@@ -680,7 +703,7 @@ export default function TraceDetailPage() {
 }
 
 function traceToSummary(trace: ReasoningTrace): string {
-  const verdict = trace.verdict ? trace.verdict.action : deriveAuditMetrics(trace).convictionTemperature
+  const verdict = trace.verdict?.action ?? convictionState(trace)
   return [
     `${trace.assetSymbol}: ${trace.market}`,
     `Verdict: ${verdict}`,
@@ -699,7 +722,7 @@ function traceToMarkdown(trace: ReasoningTrace, steps: ReasoningStep[]): string 
     `- Created: ${formatDate(trace.createdAt)}`,
     `- Status: ${trace.status}`,
     `- Access tier: ${traceAccessLabel(trace)}`,
-    `- Conviction state: ${deriveAuditMetrics(trace).convictionTemperature}`,
+    `- Conviction state: ${convictionState(trace)}`,
     `- Positioning: ${trace.verdict?.action ?? sideLabel(trace.positionIntent.side)}`,
     `- Paid unlocks: ${traceUnlockCount(trace)}`,
     '',
