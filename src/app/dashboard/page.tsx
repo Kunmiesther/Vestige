@@ -362,9 +362,9 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10,
             letterSpacing: '0.06em', textTransform: 'uppercase',
-          color: trace.status === 'published' || trace.status === 'pinned' ? 'var(--lime)' : trace.status === 'publishing' ? 'var(--violet)' : 'var(--text-tertiary)',
+          color: trace.status === 'stored' ? 'var(--lime)' : trace.status === 'failed' ? 'var(--ember)' : 'var(--text-tertiary)',
           }}>
-            {trace.status === 'published' || trace.status === 'pinned' ? '✓ On Arc' : trace.status}
+            {trace.status === 'stored' ? 'Stored' : trace.status}
           </span>
 
           <span style={{
@@ -475,7 +475,7 @@ export default function DashboardPage() {
   const long    = traces.filter(t => t.positionIntent.side === 'long').length
   const short   = traces.filter(t => t.positionIntent.side === 'short').length
   const neutral = traces.filter(t => t.positionIntent.side === 'neutral').length
-  const onArc   = traces.filter(t => t.status === 'published' || t.status === 'pinned').length
+  const stored  = traces.filter(t => t.status === 'stored').length
 
   return (
     <>
@@ -489,7 +489,7 @@ export default function DashboardPage() {
         }}>
           <div>
             <div className="mono-label" style={{ marginBottom: 14 }}>
-              Prediction market intelligence · Arc testnet
+              Prediction market intelligence
             </div>
             <h1 style={{
               fontFamily: 'var(--font-display)', fontSize: 'clamp(32px,5vw,52px)',
@@ -527,7 +527,7 @@ export default function DashboardPage() {
                 { label: 'Long',    val: long,    color: 'var(--lime)'          },
                 { label: 'Short',   val: short,   color: 'var(--ember)'         },
                 { label: 'Neutral', val: neutral, color: 'var(--text-secondary)'},
-                { label: 'On Arc',  val: onArc,   color: 'var(--violet)'        },
+                { label: 'Stored',  val: stored,  color: 'var(--violet)'        },
               ].map(s => (
                 <div key={s.label} style={{ background: 'var(--bg-card)', padding: '12px 16px', textAlign: 'center' }}>
                   <div className="mono-label" style={{ marginBottom: 4 }}>{s.label}</div>
@@ -584,7 +584,7 @@ export default function DashboardPage() {
           gridTemplateColumns: '70px 1fr 110px 110px 110px 80px 90px',
           gap: 12, padding: '6px 20px', marginBottom: 6,
         }} className="hide-mobile">
-          {['Asset','Market / Edge','Confidence','Side','Arc status','Age',''].map(h => (
+          {['Asset','Market / Edge','Confidence','Side','Audit','Age',''].map(h => (
             <div key={h} className="mono-label">{h}</div>
           ))}
         </div>

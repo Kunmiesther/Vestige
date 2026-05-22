@@ -1,1 +1,1 @@
-export type Permission = "agent:create" | "agent:run" | "trace:publish" | "position:follow";
+export type Permission = "agent:create" | "agent:run" | "position:follow";

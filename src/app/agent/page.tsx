@@ -185,7 +185,7 @@ export default function AgentPage() {
           {[
             { role: 'Researcher', color: 'var(--violet)', desc: 'Observes market conditions, gathers evidence, identifies signals' },
             { role: 'Risk Manager', color: 'var(--ember)', desc: 'Challenges the thesis, quantifies downside, sets stop conditions' },
-            { role: 'Portfolio Manager', color: 'var(--lime)', desc: 'Synthesizes reasoning, sets position intent, publishes trace' },
+            { role: 'Portfolio Manager', color: 'var(--lime)', desc: 'Synthesizes reasoning, sets position intent, stores trace' },
           ].map(r => (
             <div key={r.role}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: r.color, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>{r.role}</div>

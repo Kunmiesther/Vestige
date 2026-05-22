@@ -378,8 +378,8 @@ a { color: inherit; text-decoration: none; }
 .evidence-neutral { border-left: 2px solid var(--text-tertiary); }
 .evidence-contradicting { border-left: 2px solid var(--ember); }
 
-/* ARC */
-.arc-badge {
+/* Audit */
+.audit-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -389,9 +389,10 @@ a { color: inherit; text-decoration: none; }
   text-transform: uppercase;
   padding: 4px 10px;
   border-radius: 3px;
+  color: var(--silver);
+  background: rgba(168,168,184,0.06);
+  border: 1px solid rgba(168,168,184,0.14);
 }
-.arc-published { color: var(--lime); background: var(--lime-dim); border: 1px solid var(--lime-border); }
-.arc-pending { color: var(--silver); background: rgba(168,168,184,0.06); border: 1px solid rgba(168,168,184,0.14); }
 
 /* ROLES */
 .role-researcher { color: var(--violet); }

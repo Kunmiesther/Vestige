@@ -2,7 +2,7 @@ import type { Agent, CreateAgentInput } from "./agent";
 import type { AgentPerformanceSnapshot } from "./performance";
 import type { MarketSnapshot } from "../../markets/market.types";
 import type { Follow, Position } from "./position";
-import type { ReasoningTrace, TraceStatus } from "./trace";
+import type { ReasoningTrace } from "./trace";
 
 export interface ApiErrorResponse {
   error: {
@@ -51,19 +51,6 @@ export interface ListTracesResponse {
 
 export interface GetTraceResponse {
   trace: ReasoningTrace;
-}
-
-export interface PublishTraceResponse {
-  traceId: string;
-  ipfsCid?: string;
-  irysId?: string;
-  txHash?: string;
-  status: TraceStatus;
-  publisherAddress?: string;
-  publisherWalletType?: 'circle' | 'injected';
-  publisherWalletId?: string;
-  publishSignature?: string;
-  publishMessage?: string;
 }
 
 export interface ListPositionsQuery {

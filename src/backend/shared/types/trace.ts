@@ -1,10 +1,18 @@
 import type { ISODateTime, UUID } from "./common";
 
-export type TraceStatus = "draft" | "stored" | "publishing" | "published" | "pinned" | "failed";
+export type TraceStatus = "draft" | "stored" | "failed";
 export type PositionSide = "long" | "short" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type TimeHorizon = "intraday" | "swing" | "long-term";
-export type VerdictAction = "EXECUTE" | "RESTRUCTURE" | "KILL";
+export type VerdictAction =
+  | "Aggressive Long"
+  | "Tactical Long"
+  | "Watchlist Long"
+  | "Neutral / Wait"
+  | "Tactical Short"
+  | "High-Risk Fade"
+  | "Conviction Breakdown"
+  | "No Clear Edge";
 
 export interface ReasoningStep {
   order: number;
@@ -46,38 +54,6 @@ export interface ReasoningTrace {
   verdict?: StructuredVerdict;
   rawModelOutput?: string;
   status: TraceStatus;
-  ipfsCid?: string;
-  irysId?: string;
-  txHash?: string;
-  publisherAddress?: string;
-  publisherWalletType?: "circle" | "injected";
-  publisherWalletId?: string;
-  publishSignature?: string;
-  publishMessage?: string;
   premium?: boolean;
   createdAt: ISODateTime;
-  publishedAt?: ISODateTime;
-}
-
-export interface PublishedTracePayload {
-  protocol: "vestige.trace";
-  version: "1.0";
-  traceId: UUID;
-  agentId: UUID;
-  builderId: UUID;
-  createdAt: ISODateTime;
-  market: string;
-  assetSymbol: string;
-  thesis: string;
-  reasoningSteps: ReasoningStep[];
-  risks: string[];
-  catalysts: string[];
-  confidence: ConfidenceLevel;
-  positionIntent: PositionIntent;
-  verdict?: StructuredVerdict;
-  publisherAddress?: string;
-  publisherWalletType?: "circle" | "injected";
-  publisherWalletId?: string;
-  publishSignature?: string;
-  publishMessage?: string;
 }

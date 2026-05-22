@@ -13,7 +13,6 @@ export type {
   ConfidenceLevel,
   TimeHorizon,
   TraceStatus,
-  PublishedTracePayload,
 } from '@/backend/shared/types/trace'
 export type { Position, Follow } from '@/backend/shared/types/position'
 export type {

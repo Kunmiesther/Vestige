@@ -3,8 +3,17 @@ import { z } from "zod";
 export const positionSideSchema = z.enum(["long", "short", "neutral"]);
 export const confidenceLevelSchema = z.enum(["low", "medium", "high"]);
 export const timeHorizonSchema = z.enum(["intraday", "swing", "long-term"]);
-export const traceStatusSchema = z.enum(["draft", "stored", "publishing", "published", "pinned", "failed"]);
-export const verdictActionSchema = z.enum(["EXECUTE", "RESTRUCTURE", "KILL"]);
+export const traceStatusSchema = z.enum(["draft", "stored", "failed"]);
+export const verdictActionSchema = z.enum([
+  "Aggressive Long",
+  "Tactical Long",
+  "Watchlist Long",
+  "Neutral / Wait",
+  "Tactical Short",
+  "High-Risk Fade",
+  "Conviction Breakdown",
+  "No Clear Edge",
+]);
 
 export const reasoningStepSchema = z.object({
   order: z.number().int().nonnegative(),
@@ -46,17 +55,8 @@ export const reasoningTraceSchema = z.object({
   verdict: structuredVerdictSchema.optional(),
   rawModelOutput: z.string().optional(),
   status: traceStatusSchema,
-  ipfsCid: z.string().optional(),
-  irysId: z.string().optional(),
-  txHash: z.string().optional(),
-  publisherAddress: z.string().optional(),
-  publisherWalletType: z.enum(["circle", "injected"]).optional(),
-  publisherWalletId: z.string().optional(),
-  publishSignature: z.string().optional(),
-  publishMessage: z.string().optional(),
   premium: z.boolean().optional(),
   createdAt: z.string(),
-  publishedAt: z.string().optional(),
 });
 
 export type ReasoningTraceSchema = z.infer<typeof reasoningTraceSchema>;

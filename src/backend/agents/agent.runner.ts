@@ -8,7 +8,7 @@ import { reasoningTraceSchema } from "../shared/schemas/trace.zod";
 import { VestigeError } from "../shared/errors";
 import type { RunAgentRequest, RunAgentResponse } from "../shared/types/api";
 import type { Agent } from "../shared/types/agent";
-import type { ReasoningStep, ReasoningTrace } from "../shared/types/trace";
+import type { ReasoningStep, ReasoningTrace, VerdictAction } from "../shared/types/trace";
 import { createTraceRepository, type TraceRepository } from "../traces/trace.repository";
 import { createTraceService, type TraceService } from "../traces/trace.service";
 import {
@@ -73,10 +73,16 @@ interface AgentContribution {
   recommendation: string;
 }
 
+interface EvidenceFragment {
+  text: string;
+  source: string;
+  weight: number;
+}
+
 interface CommitteeScoreMetrics {
   score: number;
   confidence: ReasoningTrace["confidence"];
-  action: NonNullable<ReasoningTrace["verdict"]>["action"];
+  action: VerdictAction;
   agreement: number;
   disagreement: number;
   directionalConviction: number;
@@ -90,6 +96,31 @@ interface CommitteeScoreMetrics {
   sentimentDivergence: number;
 }
 
+interface PositioningDecisionInput {
+  score: number;
+  side: ReasoningTrace["positionIntent"]["side"];
+  netDirection: number;
+  agreement: number;
+  directionalConviction: number;
+  riskAsymmetry: number;
+  uncertainty: number;
+  catalystStrength: number;
+  contradictionIntensity: number;
+  riskOffPressure: number;
+  neutralPressure: number;
+}
+
+const POSITIONING_ACTIONS = [
+  "Aggressive Long",
+  "Tactical Long",
+  "Watchlist Long",
+  "Neutral / Wait",
+  "Tactical Short",
+  "High-Risk Fade",
+  "Conviction Breakdown",
+  "No Clear Edge",
+] as const satisfies readonly VerdictAction[];
+
 const agentContributionSchema = z
   .object({
     stance: z.enum(["long", "short", "neutral"]),
@@ -97,7 +128,7 @@ const agentContributionSchema = z
     observation: z.string().min(20),
     inference: z.string().min(20),
     evidence: z.array(z.string().min(1)).min(2).max(5),
-    verdict: z.enum(["EXECUTE", "RESTRUCTURE", "KILL"]),
+    verdict: z.enum(POSITIONING_ACTIONS),
     reasoning: z.string().min(20),
     key_risks: z.array(z.string().min(1)).min(1).max(6),
     opportunities: z.array(z.string().min(1)).min(1).max(6),
@@ -277,12 +308,13 @@ export class DefaultAgentRunner implements AgentRunner {
             JSON_ONLY_RESPONSE_RULES,
             "Your output must match this exact JSON contract:",
             AGENT_CONTRIBUTION_RESPONSE_CONTRACT,
-            "verdict must be EXECUTE, RESTRUCTURE, or KILL from this agent's perspective.",
+            `verdict must be one of: ${POSITIONING_ACTIONS.join(", ")}.`,
             "confidence must be exactly low, medium, or high.",
-            "reasoning should support longer strategic analysis but stay inside a single JSON string.",
-            "key_risks and opportunities must cite supplied live market data, wallet/portfolio context, headline context, or the explicit absence of a required signal.",
-            "recommendation must be concrete and compatible with the final Vestige verdict engine.",
-            "Be specific, non-repetitive, risk-aware, and institutional.",
+            "reasoning must be concise, high-signal, and specialized to this agent's mandate.",
+            "Do not repeat another discipline's evidence unless you are explicitly challenging it.",
+            "key_risks and opportunities must cite supplied live market data, headline context, or the explicit absence of a required signal.",
+            "recommendation must be concrete positioning guidance from this agent's perspective.",
+            "Natural disagreement is preferred over forced consensus when evidence conflicts.",
           ].join("\n"),
         },
         {
@@ -312,7 +344,7 @@ export class DefaultAgentRunner implements AgentRunner {
       throw new VestigeError(`${profile.name} returned an invalid structured contribution.`, "AGENT_OUTPUT_INVALID");
     }
 
-    return {
+    const contribution = dedupeContributionEvidence({
       agent: profile.name,
       specialty: profile.specialty,
       stance: parsed.data.stance,
@@ -325,6 +357,10 @@ export class DefaultAgentRunner implements AgentRunner {
       key_risks: parsed.data.key_risks,
       opportunities: parsed.data.opportunities,
       recommendation: parsed.data.recommendation,
+    });
+
+    return {
+      ...contribution,
     };
   }
 }
@@ -381,8 +417,8 @@ function normalizeAgentContribution(
     pickFirst(record, ["evidence", "supporting_evidence", "signals", "data_points", "references"]),
   );
 
-  const fallbackRisks = keyRisks.length > 0 ? keyRisks : [`${profile.name}: ${inference}`];
-  const fallbackOpportunities = opportunities.length > 0 ? opportunities : [`${profile.name}: ${recommendation || inference}`];
+  const fallbackRisks = keyRisks.length > 0 ? keyRisks : [`${profile.name}: missing domain confirmation remains a risk.`];
+  const fallbackOpportunities = opportunities.length > 0 ? opportunities : [`${profile.name}: no domain-specific opportunity confirmed without more evidence.`];
   const mergedEvidence = [
     ...evidence,
     ...fallbackOpportunities.slice(0, 2),
@@ -410,12 +446,23 @@ function normalizeAgentContribution(
   };
 }
 
+function dedupeContributionEvidence(contribution: AgentContribution): AgentContribution {
+  return {
+    ...contribution,
+    evidence: dedupeTextList(contribution.evidence, 5),
+    key_risks: dedupeTextList(contribution.key_risks, 6),
+    opportunities: dedupeTextList(contribution.opportunities, 6),
+  };
+}
+
 function buildSynthesisPrompt(agent: Agent): string {
   return [
     agent.systemPrompt,
     "You are the final Vestige portfolio committee synthesizer.",
-    "Write like an institutional crypto research terminal: concise, specific, risk-aware, and non-generic.",
-    "Each reasoning step must represent a different agent perspective or committee synthesis.",
+    "Write like an investment committee note: short, dense, specific, and non-generic.",
+    "Surface disagreement clearly. Explain why agents disagree instead of smoothing dissent into consensus.",
+    "Merge overlapping evidence and avoid repeating the same bullet across agents or synthesis.",
+    "Each reasoning step must represent a distinct specialist perspective or committee debate point.",
     JSON_ONLY_RESPONSE_RULES,
     "The JSON object must exactly match this shape:",
     JSON.stringify({
@@ -432,7 +479,7 @@ function buildSynthesisPrompt(agent: Agent): string {
         timeHorizon: "intraday | swing | long-term",
       },
       verdict: {
-        action: "EXECUTE | RESTRUCTURE | KILL",
+        action: "Aggressive Long | Tactical Long | Watchlist Long | Neutral / Wait | Tactical Short | High-Risk Fade | Conviction Breakdown | No Clear Edge",
         summary: "string",
         confidence: "low | medium | high",
         score: 0,
@@ -440,10 +487,9 @@ function buildSynthesisPrompt(agent: Agent): string {
         invalidation: ["string"],
       },
     }),
-    "Include 6 to 8 high-signal reasoning steps covering macro, technical structure, sentiment, risk, catalysts, and final synthesis.",
-    "Preserve material disagreement. Do not smooth dissent into consensus; name which agent is blocking or weakening conviction.",
-    "Use EXECUTE only when the setup is actionable with explicit invalidation. Use RESTRUCTURE when the thesis needs reduced size, delayed timing, or changed parameters. Use KILL when the setup should be rejected.",
-    "The verdict must be a concise product-facing decision, not a trading guarantee.",
+    "Include 6 concise reasoning steps: Macro, Sentiment, Technical, Risk, Catalyst, Committee synthesis.",
+    "The final verdict must use institutional positioning language only.",
+    "Do not include blockchain verification or external settlement references.",
   ].join("\n");
 }
 
@@ -460,12 +506,12 @@ function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAge
     context: input.context ?? {},
     output_contract: JSON.parse(AGENT_CONTRIBUTION_RESPONSE_CONTRACT) as unknown,
     constraints: {
-      verdict: "Use EXECUTE only if this agent sees actionable edge. Use RESTRUCTURE for wait/reduce/adjust. Use KILL for reject/avoid.",
+      verdict: `Use one of: ${POSITIONING_ACTIONS.join(", ")}. Prefer the most precise positioning label for your own discipline.`,
       confidence: "Return low, medium, or high only. Normalize uncertainty into one of these labels.",
-      reasoning: "2-5 concise sentences. Explain why, not just what.",
+      reasoning: "2-4 concise sentences. Explain why, not just what. Keep it specialist-specific.",
       key_risks: "1-6 specific risks, including missing-data risks when relevant.",
       opportunities: "1-6 specific catalysts/opportunities/positive signals.",
-      recommendation: "Concrete next action compatible with portfolio and trace verdict synthesis.",
+      recommendation: "Concrete positioning guidance from your domain's perspective.",
       specialization: agentSpecializationDirective(profile),
       disagreement: "Do not force consensus. If your domain contradicts the apparent trade, state the contradiction directly.",
       avoid_generic: "Avoid broad portfolio commentary unless your agent role specifically owns that risk.",
@@ -476,19 +522,19 @@ function buildContributionUserPrompt(profile: VestigeAgentProfile, input: RunAge
 
 function agentSpecializationDirective(profile: VestigeAgentProfile): string {
   if (profile.slug === "macro-agent") {
-    return "Discuss liquidity, rates, dollar strength, ETF/treasury flows, monetary conditions, and cycle regime. Avoid CT sentiment and chart-level commentary unless it confirms macro pressure.";
+    return "Focus only on liquidity, rates, ETF flows, monetary conditions, dollar strength, and cycle regime. No social or chart reasoning.";
   }
   if (profile.slug === "sentiment-agent") {
-    return "Discuss crowd positioning, CT/social tone, funding, fear/euphoria, attention, and narrative divergence. Avoid macro rates and support/resistance unless sentiment diverges from them.";
+    return "Focus only on crowd positioning, funding, fear/euphoria, attention, and narrative momentum. No macro or technical reasoning except divergence signals.";
   }
   if (profile.slug === "technical-agent") {
-    return "Discuss structure, levels, momentum, support/resistance, volatility, invalidation, and execution only. Avoid narrative and macro claims.";
+    return "Focus only on structure, trend, support/resistance, breakout thresholds, confirmation levels, and invalidation. Keep it chart-specific and explicit.";
   }
   if (profile.slug === "risk-agent") {
-    return "Discuss downside, tail risk, volatility shock, liquidity collapse, liquidation cascades, correlation breakdowns, and operational/protocol risk. Be adversarial.";
+    return "Focus only on downside, volatility expansion, liquidity collapse, liquidation cascades, correlation breakdowns, and structural risk. Challenge bullish assumptions.";
   }
   if (profile.slug === "catalyst-agent") {
-    return "Discuss dated catalysts, unlocks, launches, upgrades, deadlines, event paths, and whether timing is actionable. Penalize vague narratives without a catalyst path.";
+    return "Focus only on forward catalysts, unlocks, launches, upgrades, governance, deadlines, and event timing. Penalize vague narratives.";
   }
   return profile.specialty;
 }
@@ -514,11 +560,12 @@ function synthesizeFromContributions(input: RunAgentRequest, contributions: Agen
   };
   const catalysts = contributionLines(contributions.filter((item) => item.agent.includes("Catalyst") || item.agent.includes("Macro") || item.agent.includes("Sentiment")));
   const risks = contributionLines(contributions.filter((item) => item.agent.includes("Risk") || item.confidence === "low" || item.stance === "neutral"));
+  const uniqueEvidence = selectUniqueEvidence(contributions, 5);
   const marketData = input.context?.marketSnapshot
     ? `${input.assetSymbol.toUpperCase()} at ${input.context.marketSnapshot.price} ${input.context.marketSnapshot.quoteAsset} with ${input.context.marketSnapshot.change24hPercent ?? "unknown"}% 24h change from ${input.context.marketSnapshot.source}`
     : `live ${input.assetSymbol.toUpperCase()} market context was requested but no snapshot was available`;
   const fallbackBody: GeneratedTraceBody = {
-    thesis: `${input.assetSymbol.toUpperCase()} receives a ${side} committee bias with ${confidence} conviction after five independent live-agent reviews. Market input: ${marketData}. Vote split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral.`,
+    thesis: `${input.assetSymbol.toUpperCase()} screens ${side} with ${confidence} conviction after five specialist reviews. Market input: ${marketData}. Vote split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral; dissent is retained in the audit trail.`,
     reasoningSteps: [
       ...contributions.map((contribution, index) => ({
         order: index,
@@ -530,13 +577,13 @@ function synthesizeFromContributions(input: RunAgentRequest, contributions: Agen
       {
         order: contributions.length,
         title: "Committee synthesis",
-        observation: `Consensus: ${longVotes} long, ${shortVotes} short, ${contributions.length - longVotes - shortVotes} neutral across five specialized agents.`,
-        inference: `Positioning should remain ${side} with ${confidence} conviction; size should be reduced if volatility expands without confirmation from liquidity or market breadth.`,
-        evidence: contributions.flatMap((contribution) => contribution.evidence.slice(0, 1)).slice(0, 5),
+        observation: `Committee split: ${longVotes} long, ${shortVotes} short, ${neutralVotes} neutral. Highest-quality unique evidence is prioritized over repeated support.`,
+        inference: `Positioning remains ${side}, but conviction is gated by disagreement, risk pressure, and whether catalysts or levels confirm the thesis.`,
+        evidence: uniqueEvidence.map((item) => `${item.source}: ${item.text}`),
       },
     ],
-    catalysts: catalysts.length > 0 ? catalysts : contributions.map((item) => `${item.agent}: ${item.inference}`).slice(0, 4),
-    risks: risks.length > 0 ? risks : contributions.filter((item) => item.agent.includes("Risk")).map((item) => `${item.agent}: ${item.inference}`).slice(0, 4),
+    catalysts: dedupeTextList(catalysts.length > 0 ? catalysts : contributions.map((item) => `${item.agent}: ${item.inference}`), 4),
+    risks: dedupeTextList(risks.length > 0 ? risks : contributions.filter((item) => item.agent.includes("Risk")).map((item) => `${item.agent}: ${item.inference}`), 4),
     confidence,
     positionIntent,
   };
@@ -550,10 +597,16 @@ function finalizeGeneratedTraceBody(
   input: RunAgentRequest,
 ): GeneratedTraceBody {
   const metrics = computeCommitteeScore(generated, contributions, input);
+  const reasoningSteps = normalizeReasoningSteps(generated.reasoningSteps, contributions);
   return {
     ...generated,
+    thesis: limitSentence(generated.thesis, 520),
+    reasoningSteps,
+    risks: dedupeTextList(generated.risks, 6),
+    catalysts: dedupeTextList(generated.catalysts, 6),
     confidence: metrics.confidence,
-    verdict: buildStructuredVerdict(generated, contributions, input, metrics),
+    positionIntent: normalizePositionIntent(generated.positionIntent, metrics.action),
+    verdict: buildStructuredVerdict({ ...generated, reasoningSteps }, contributions, input, metrics),
   };
 }
 
@@ -566,7 +619,7 @@ function buildStructuredVerdict(
   const metrics = existingMetrics ?? computeCommitteeScore(generated, contributions, input);
   return {
     action: metrics.action,
-    summary: `${metrics.action}: ${generated.positionIntent.side.toUpperCase()} bias at ${metrics.score}/100 after ${Math.round(metrics.agreement * 100)}% agent alignment, ${Math.round(metrics.evidenceQuality * 100)}% evidence quality, and ${Math.round(metrics.riskAsymmetry * 100)}% risk drag.`,
+    summary: `${metrics.action} at ${metrics.score}/100. Alignment ${Math.round(metrics.agreement * 100)}%, evidence ${Math.round(metrics.evidenceQuality * 100)}%, contradiction ${Math.round(metrics.disagreement * 100)}%, risk pressure ${Math.round(metrics.riskAsymmetry * 100)}%.`,
     confidence: metrics.confidence,
     score: metrics.score,
     primaryDrivers: buildPrimaryDrivers(generated, contributions, metrics),
@@ -607,48 +660,56 @@ function computeCommitteeScore(
   const riskAsymmetry = Math.min(1, (
     generated.risks.length / 8 +
     contributions.reduce((sum, item) => sum + item.key_risks.length, 0) / 24 +
-    (contributions.find((item) => item.agent.includes("Risk"))?.verdict === "KILL" ? 0.25 : 0)
+    (isRiskOffVerdict(contributions.find((item) => item.agent.includes("Risk"))?.verdict) ? 0.25 : 0)
   ) / 1.5);
   const sentimentDivergence = sentimentDivergenceScore(contributions);
+  const contradictionIntensity = contradictionScore(contributions);
+  const uniqueEvidenceQuality = uniqueEvidenceScore(contributions);
   const lowEvidencePenalty = evidenceQuality < 0.35 ? 12 : evidenceQuality < 0.55 ? 6 : 0;
-  const verdictDrag = Math.min(1, contributions.filter((item) => item.verdict === "KILL").length / count);
-  const executeSupport = contributions.filter((item) => item.verdict === "EXECUTE").length / count;
+  const riskOffPressure = Math.min(1, contributions.filter((item) => isRiskOffVerdict(item.verdict)).length / count);
+  const constructiveSupport = contributions.filter((item) => isConstructiveVerdict(item.verdict)).length / count;
 
   const rawScore =
-    34 +
-    agreement * 10 +
-    directionalConviction * 20 +
-    averageConfidence * 12 +
-    confidenceConsistency * 7 +
-    evidenceQuality * 15 +
-    catalystStrength * 10 -
-    disagreement * 18 -
-    neutralPressure * 12 -
+    32 +
+    agreement * 13 +
+    directionalConviction * 17 +
+    averageConfidence * 11 +
+    confidenceConsistency * 8 +
+    evidenceQuality * 12 +
+    uniqueEvidenceQuality * 9 +
+    catalystStrength * 10 +
+    constructiveSupport * 8 -
+    disagreement * 17 -
+    neutralPressure * 10 -
     uncertainty * 16 -
-    volatilityRisk * 10 -
+    volatilityRisk * 9 -
     riskAsymmetry * 18 -
-    sentimentDivergence * 7 -
-    verdictDrag * 12 +
-    executeSupport * 6 -
+    sentimentDivergence * 6 -
+    contradictionIntensity * 12 -
+    riskOffPressure * 11 -
     lowEvidencePenalty;
 
-  const uncappedScore = Math.max(8, Math.min(94, Math.round(rawScore)));
+  const uncappedScore = Math.max(5, Math.min(96, Math.round(rawScore)));
   const scoreCap = generated.positionIntent.side === "neutral" || neutralPressure >= 0.6
-    ? 46
+    ? 50
     : directionalConviction < 0.35
-      ? 58
+      ? 62
       : 94;
   const score = Math.min(uncappedScore, scoreCap);
-  const action: CommitteeScoreMetrics["action"] =
-    score >= 72 &&
-    generated.positionIntent.side !== "neutral" &&
-    directionalConviction >= 0.45 &&
-    agreement >= 0.6 &&
-    riskAsymmetry < 0.7
-      ? "EXECUTE"
-      : score <= 40 || generated.positionIntent.side === "neutral" || neutralPressure >= 0.6
-        ? "KILL"
-        : "RESTRUCTURE";
+  const netDirection = Math.sign(stanceSum);
+  const action = positioningActionFromMetrics({
+    score,
+    side: generated.positionIntent.side,
+    netDirection,
+    agreement,
+    directionalConviction,
+    riskAsymmetry,
+    uncertainty,
+    catalystStrength,
+    contradictionIntensity,
+    riskOffPressure,
+    neutralPressure,
+  });
   const confidence: ReasoningTrace["confidence"] =
     score >= 76 && disagreement < 0.35 && directionalConviction >= 0.55 && evidenceQuality >= 0.55
       ? "high"
@@ -679,16 +740,16 @@ function buildPrimaryDrivers(
   contributions: AgentContribution[],
   metrics: CommitteeScoreMetrics,
 ): string[] {
-  return [
+  const constructive = contributions
+    .filter((item) => isConstructiveVerdict(item.verdict) || item.confidence === "high")
+    .map((item) => `${item.agent}: ${item.recommendation}`);
+
+  return dedupeTextList([
     `Agent alignment: ${Math.round(metrics.agreement * 100)}%; directional conviction: ${Math.round(metrics.directionalConviction * 100)}%; confidence consistency: ${Math.round(metrics.confidenceConsistency * 100)}%.`,
     `Evidence quality: ${Math.round(metrics.evidenceQuality * 100)}%; catalyst strength: ${Math.round(metrics.catalystStrength * 100)}%.`,
     ...generated.catalysts,
-    ...contributions
-      .filter((item) => item.verdict === "EXECUTE" || item.confidence === "high")
-      .map((item) => `${item.agent}: ${item.recommendation}`),
-  ]
-    .filter((line, index, lines) => Boolean(line) && lines.indexOf(line) === index)
-    .slice(0, 4);
+    ...constructive,
+  ], 4);
 }
 
 function buildInvalidationDrivers(
@@ -696,22 +757,19 @@ function buildInvalidationDrivers(
   contributions: AgentContribution[],
   metrics: CommitteeScoreMetrics,
 ): string[] {
-  return [
+  return dedupeTextList([
     `Risk drag: ${Math.round(metrics.riskAsymmetry * 100)}%; uncertainty: ${Math.round(metrics.uncertainty * 100)}%; volatility pressure: ${Math.round(metrics.volatilityRisk * 100)}%; neutral pressure: ${Math.round(metrics.neutralPressure * 100)}%.`,
     ...generated.risks,
     ...contributions
-      .filter((item) => item.verdict === "KILL" || item.agent.includes("Risk"))
+      .filter((item) => isRiskOffVerdict(item.verdict) || item.agent.includes("Risk"))
       .flatMap((item) => item.key_risks.map((risk) => `${item.agent}: ${risk}`)),
-  ]
-    .filter((line, index, lines) => Boolean(line) && lines.indexOf(line) === index)
-    .slice(0, 4);
+  ], 4);
 }
 
 function contributionLines(contributions: AgentContribution[]): string[] {
-  return contributions
+  return dedupeTextList(contributions
     .map((contribution) => `${contribution.agent}: ${contribution.inference}`)
-    .filter((line, index, lines) => lines.indexOf(line) === index)
-    .slice(0, 4);
+    .filter(Boolean), 4);
 }
 
 function stanceValue(stance: ReasoningTrace["positionIntent"]["side"]): number {
@@ -755,6 +813,84 @@ function marketVolatilityRisk(input: RunAgentRequest): number {
   return Math.min(1, intradayRange * 4 + change * 2);
 }
 
+function positioningActionFromMetrics(input: PositioningDecisionInput): VerdictAction {
+  const side = input.netDirection > 0 ? "long" : input.netDirection < 0 ? "short" : input.side;
+  const blockedByRisk = input.riskAsymmetry >= 0.72 || input.riskOffPressure >= 0.4;
+  const conflicted = input.contradictionIntensity >= 0.55 || input.neutralPressure >= 0.55;
+
+  if (input.score <= 24 || (conflicted && input.score < 45)) return "Conviction Breakdown";
+  if (input.score <= 36 || input.uncertainty >= 0.72) return "No Clear Edge";
+  if (side === "neutral" || input.directionalConviction < 0.25) return "Neutral / Wait";
+
+  if (side === "short") {
+    if (blockedByRisk || input.score < 58) return "High-Risk Fade";
+    return "Tactical Short";
+  }
+
+  if (blockedByRisk && input.score < 70) return "Watchlist Long";
+  if (input.score >= 82 && input.agreement >= 0.72 && input.catalystStrength >= 0.45 && input.riskAsymmetry < 0.55) {
+    return "Aggressive Long";
+  }
+  if (input.score >= 62 && input.directionalConviction >= 0.38) return "Tactical Long";
+  return "Watchlist Long";
+}
+
+function isConstructiveVerdict(verdict?: VerdictAction): boolean {
+  return verdict === "Aggressive Long" || verdict === "Tactical Long" || verdict === "Watchlist Long";
+}
+
+function isRiskOffVerdict(verdict?: VerdictAction): boolean {
+  return verdict === "Tactical Short" ||
+    verdict === "High-Risk Fade" ||
+    verdict === "Conviction Breakdown" ||
+    verdict === "No Clear Edge";
+}
+
+function contradictionScore(contributions: AgentContribution[]): number {
+  if (contributions.length <= 1) return 0;
+  const stanceSpread = Math.abs(
+    Math.max(...contributions.map((item) => stanceValue(item.stance))) -
+    Math.min(...contributions.map((item) => stanceValue(item.stance))),
+  ) / 2;
+  const highConfidenceOpposition = contributions.some((a) =>
+    a.confidence === "high" &&
+    contributions.some((b) => b !== a && b.confidence !== "low" && stanceValue(a.stance) * stanceValue(b.stance) < 0),
+  ) ? 0.35 : 0;
+  const riskOpposesLong = contributions.some((item) => item.agent.includes("Risk") && isRiskOffVerdict(item.verdict)) &&
+    contributions.some((item) => isConstructiveVerdict(item.verdict))
+    ? 0.25
+    : 0;
+  return Math.min(1, stanceSpread * 0.45 + highConfidenceOpposition + riskOpposesLong);
+}
+
+function uniqueEvidenceScore(contributions: AgentContribution[]): number {
+  const all = contributions.flatMap((item) => item.evidence);
+  if (all.length === 0) return 0;
+  const unique = dedupeTextList(all, all.length);
+  return Math.min(1, unique.length / all.length + Math.min(unique.length, 8) / 24);
+}
+
+function selectUniqueEvidence(contributions: AgentContribution[], limit: number): EvidenceFragment[] {
+  const fragments = contributions.flatMap((contribution) =>
+    contribution.evidence.map((text) => ({
+      text,
+      source: contribution.agent,
+      weight: contributionEvidenceQuality(contribution) + confidenceValue(contribution.confidence) * 0.25,
+    })),
+  );
+
+  const seen = new Set<string>();
+  return fragments
+    .sort((a, b) => b.weight - a.weight)
+    .filter((item) => {
+      const key = evidenceKey(item.text);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
 function keywordDensity(values: string[], keywords: string[]): number {
   if (values.length === 0) return 0.5;
   const matches = values.filter((value) => keywords.some((keyword) => value.toLowerCase().includes(keyword))).length;
@@ -796,10 +932,19 @@ function normalizeConfidence(value: unknown): ReasoningTrace["confidence"] {
 }
 
 function normalizeVerdictAction(value: unknown): NonNullable<ReasoningTrace["verdict"]>["action"] {
-  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
-  if (normalized.includes("EXECUTE") || normalized.includes("BUY") || normalized.includes("LONG") || normalized.includes("ACT")) return "EXECUTE";
-  if (normalized.includes("KILL") || normalized.includes("REJECT") || normalized.includes("AVOID") || normalized.includes("NO TRADE")) return "KILL";
-  return "RESTRUCTURE";
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!normalized) return "No Clear Edge";
+  if (normalized.includes("aggressive") && normalized.includes("long")) return "Aggressive Long";
+  if (normalized.includes("tactical") && normalized.includes("long")) return "Tactical Long";
+  if (normalized.includes("watchlist") || (normalized.includes("long") && normalized.includes("wait"))) return "Watchlist Long";
+  if (normalized.includes("neutral") || normalized.includes("wait") || normalized.includes("stand aside")) return "Neutral / Wait";
+  if (normalized.includes("tactical") && normalized.includes("short")) return "Tactical Short";
+  if (normalized.includes("high-risk") || normalized.includes("fade")) return "High-Risk Fade";
+  if (normalized.includes("conviction") && normalized.includes("breakdown")) return "Conviction Breakdown";
+  if (normalized.includes("no clear") || normalized.includes("no edge") || normalized.includes("reject") || normalized.includes("avoid")) return "No Clear Edge";
+  if (normalized.includes("long") || normalized.includes("buy") || normalized.includes("add")) return "Tactical Long";
+  if (normalized.includes("short") || normalized.includes("sell")) return "Tactical Short";
+  return "No Clear Edge";
 }
 
 function normalizeStance(
@@ -810,7 +955,9 @@ function normalizeStance(
   if (normalized.includes("short") || normalized.includes("bear") || normalized.includes("downside")) return "short";
   if (normalized.includes("long") || normalized.includes("bull") || normalized.includes("upside")) return "long";
   if (normalized.includes("neutral") || normalized.includes("flat") || normalized.includes("wait")) return "neutral";
-  return verdict === "EXECUTE" ? "long" : "neutral";
+  if (verdict === "Aggressive Long" || verdict === "Tactical Long" || verdict === "Watchlist Long") return "long";
+  if (verdict === "Tactical Short" || verdict === "High-Risk Fade") return "short";
+  return "neutral";
 }
 
 function pickFirst(record: Record<string, unknown>, keys: string[]): unknown {
@@ -865,6 +1012,80 @@ function normalizeStringArray(value: unknown): string[] {
     .split(/\n+|(?:^|\s)(?:[-*•]|\d+[.)])\s+/g)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeReasoningSteps(steps: ReasoningStep[], contributions: AgentContribution[]): ReasoningStep[] {
+  const fallbackByTitle = new Map(contributions.map((item) => [item.agent, item]));
+  const sourceSteps = steps.length > 0
+    ? steps
+    : contributions.map((contribution, index) => ({
+      order: index,
+      title: contribution.agent,
+      observation: contribution.observation,
+      inference: contribution.inference,
+      evidence: contribution.evidence,
+    }));
+
+  return sourceSteps
+    .slice(0, 8)
+    .map((step, index) => {
+      const contribution = fallbackByTitle.get(step.title);
+      return {
+        order: index,
+        title: limitSentence(step.title || contribution?.agent || `Step ${index + 1}`, 80),
+        observation: limitSentence(step.observation || contribution?.observation || "Specialist observation unavailable.", 360),
+        inference: limitSentence(step.inference || contribution?.inference || "Inference unavailable.", 420),
+        evidence: dedupeTextList(step.evidence ?? contribution?.evidence ?? [], 4),
+      };
+    });
+}
+
+function normalizePositionIntent(
+  intent: ReasoningTrace["positionIntent"],
+  action: VerdictAction,
+): ReasoningTrace["positionIntent"] {
+  const side = action === "Tactical Short" || action === "High-Risk Fade"
+    ? "short"
+    : action === "Aggressive Long" || action === "Tactical Long" || action === "Watchlist Long"
+      ? "long"
+      : "neutral";
+
+  return {
+    ...intent,
+    side,
+    timeHorizon: intent.timeHorizon ?? "swing",
+  };
+}
+
+function dedupeTextList(values: string[], max: number): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const text = stripMarkdownArtifacts(value).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const key = evidenceKey(text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(limitSentence(text, 260));
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
+function evidenceKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9%$.\s]/g, "")
+    .split(/\s+/)
+    .filter((word) => word.length > 3 && !["agent", "market", "signal", "context", "price", "trade"].includes(word))
+    .slice(0, 10)
+    .join(" ");
+}
+
+function limitSentence(value: string, max: number): string {
+  const text = stripMarkdownArtifacts(value).replace(/\s+/g, " ").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 3).trim()}...`;
 }
 
 function ensureArrayLength(values: string[], fallbacks: string[], min: number, max: number): string[] {

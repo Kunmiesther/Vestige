@@ -13,8 +13,7 @@ function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
 function StatusBadge({ status }: { status: TraceStatus }) {
   const map: Record<TraceStatus, string> = {
     draft: 'status-watching', stored: 'status-watching',
-    publishing: 'status-watching', published: 'status-in_position',
-    pinned: 'status-in_position', failed: 'status-exited',
+    failed: 'status-exited',
   }
   return <span className={`status-badge ${map[status]}`}>{statusLabel(status)}</span>
 }
@@ -43,7 +42,7 @@ export default function TracesPage() {
   const [traces, setTraces] = useState<ReasoningTrace[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'published' | 'stored' | 'failed'>('all')
+  const [filter, setFilter] = useState<'all' | 'stored' | 'failed'>('all')
   const [search, setSearch] = useState('')
 
   const fetch = useCallback(async () => {
@@ -63,7 +62,6 @@ export default function TracesPage() {
   const filtered = traces.filter(t => {
     const matchFilter =
       filter === 'all' ||
-      (filter === 'published' && (t.status === 'published' || t.status === 'pinned')) ||
       t.status === filter
     const matchSearch = !search || t.market.toLowerCase().includes(search.toLowerCase()) || t.assetSymbol.toLowerCase().includes(search.toLowerCase())
     return matchFilter && matchSearch
@@ -104,7 +102,7 @@ export default function TracesPage() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div className="mono-label">{loading ? 'Loading…' : `${filtered.length} trace${filtered.length !== 1 ? 's' : ''}`}</div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {(['all','published','stored','failed'] as const).map(f => (
+          {(['all','stored','failed'] as const).map(f => (
             <button key={f} onClick={() => setFilter(f)} style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
               textTransform: 'uppercase', padding: '5px 12px', borderRadius: 3,

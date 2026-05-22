@@ -15,11 +15,6 @@ export const ARC_TESTNET = {
   faucetUrl: 'https://faucet.circle.com',
 } as const
 
-/** Build an arcscan explorer link for a tx hash */
-export function arcTxUrl(txHash: string): string {
-  return `${ARC_TESTNET.explorerUrl}/tx/${txHash}`
-}
-
 /** Build an arcscan explorer link for an address */
 export function arcAddressUrl(address: string): string {
   return `${ARC_TESTNET.explorerUrl}/address/${address}`

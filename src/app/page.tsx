@@ -90,7 +90,7 @@ export default function HomePage() {
               fontFamily: 'var(--font-editorial)',
               fontStyle: 'italic',
             }}>
-              Vestige publishes every reasoning step before entering a position.
+              Vestige stores every reasoning step before entering a position.
               Thesis, evidence, edge, risks — all on‑chain before the trade.
               You see the logic. Then you decide.
             </p>
@@ -201,8 +201,8 @@ export default function HomePage() {
                 },
                 {
                   num: '02',
-                  title: 'Trace published on Arc',
-                  body: 'Before any position is taken, the full reasoning chain is hashed and published on Arc. Immutable. Public. Verifiable.',
+                  title: 'Trace audit trail',
+                  body: 'Every analysis is stored as a structured reasoning trace with verdict, evidence, dissent, risk notes, and exportable reports.',
                   color: 'var(--lime)',
                 },
                 {

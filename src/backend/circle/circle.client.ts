@@ -171,32 +171,6 @@ export async function getTokenBalance(userToken: string, walletId: string): Prom
   }))
 }
 
-export async function createSignMessageChallenge(input: {
-  userToken: string
-  walletId: string
-  message: string
-}): Promise<{ challengeId: string }> {
-  if (!input.userToken) throw new Error('userToken is required.')
-  if (!input.walletId) throw new Error('walletId is required.')
-  if (!input.message) throw new Error('message is required.')
-
-  const body = await circleFetch<{ data?: { challengeId?: string } }>('/user/sign/message', {
-    method: 'POST',
-    headers: {
-      'X-User-Token': input.userToken,
-    },
-    body: JSON.stringify({
-      idempotencyKey: randomUUID(),
-      walletId: input.walletId,
-      message: input.message,
-    }),
-  })
-
-  const challengeId = body.data?.challengeId
-  if (!challengeId) throw new Error('Circle did not return a sign-message challenge.')
-  return { challengeId }
-}
-
 export async function getUserToken(userId: string): Promise<{ userToken: string; encryptionKey: string }> {
   const body = await circleFetch<{ data?: { userToken?: string; encryptionKey?: string } }>('/users/token', {
     method: 'POST',

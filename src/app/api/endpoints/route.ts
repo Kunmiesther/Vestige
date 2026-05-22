@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import {
   CircleApiError,
-  createSignMessageChallenge,
   createDeviceToken,
   getTokenBalance,
   initializeUser,
@@ -13,7 +12,6 @@ type CircleEndpointAction =
   | 'initializeUser'
   | 'listWallets'
   | 'getTokenBalance'
-  | 'createSignMessageChallenge'
 
 interface CircleEndpointRequest {
   action?: CircleEndpointAction
@@ -21,7 +19,6 @@ interface CircleEndpointRequest {
   userToken?: string
   accountType?: 'EOA' | 'SCA'
   walletId?: string
-  message?: string
 }
 
 export async function POST(request: Request) {
@@ -57,18 +54,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ action: body.action, balances })
       }
 
-      case 'createSignMessageChallenge': {
-        if (!body.userToken) throw new Error('Missing Circle user token.')
-        if (!body.walletId) throw new Error('Missing Circle wallet id.')
-        if (!body.message) throw new Error('Missing Circle sign message.')
-        const challenge = await createSignMessageChallenge({
-          userToken: body.userToken,
-          walletId: body.walletId,
-          message: body.message,
-        })
-        return NextResponse.json({ action: body.action, ...challenge })
-      }
-
       default:
         return NextResponse.json(
           { error: { code: 'UNKNOWN_ENDPOINT_ACTION', message: 'Unknown backend endpoint action.' } },
@@ -78,6 +63,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Circle endpoint request failed.'
     if (error instanceof CircleApiError) {
+      const developmentDetails = process.env.NODE_ENV !== 'production'
+        ? formatDevelopmentCircleError(error)
+        : undefined
       console.error('[Circle API route] upstream error', {
         action: 'circle-endpoint',
         method: error.method,
@@ -92,7 +80,7 @@ export async function POST(request: Request) {
         {
           error: {
             code: 'CIRCLE_UPSTREAM_FAILED',
-            message,
+            message: developmentDetails ?? message,
             upstream: {
               status: error.status,
               statusText: error.statusText,
@@ -126,4 +114,14 @@ function statusFromErrorMessage(message: string): number {
   if (normalized.includes('expired') || normalized.includes('unauthorized') || normalized.includes('invalid user token')) return 401
   if (normalized.includes('already initialized') || normalized.includes('already existed') || normalized.includes('was initialized')) return 409
   return 502
+}
+
+function formatDevelopmentCircleError(error: CircleApiError): string {
+  return [
+    error.message,
+    `Circle ${error.method} ${error.url}`,
+    `Status ${error.status} ${error.statusText}`,
+    `Code ${error.circleCode ?? 'unknown'}`,
+    JSON.stringify(error.body, null, 2),
+  ].filter(Boolean).join('\n')
 }

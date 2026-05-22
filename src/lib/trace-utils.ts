@@ -31,9 +31,6 @@ export function statusLabel(s: TraceStatus): string {
   const map: Record<TraceStatus, string> = {
     draft: 'Draft',
     stored: 'Stored',
-    publishing: 'Publishing',
-    published: 'Published',
-    pinned: 'Published',
     failed: 'Failed',
   }
   return map[s] ?? s
@@ -73,6 +70,6 @@ export function deriveEdge(trace: ReasoningTrace): string {
 export function deriveBadgeStatus(trace: ReasoningTrace): 'active' | 'watching' | 'neutral' | 'exited' {
   if (trace.status === 'failed') return 'exited'
   if (trace.positionIntent.side === 'neutral') return 'watching'
-  if (trace.status === 'pinned' || trace.status === 'published' || trace.status === 'stored') return 'active'
+  if (trace.status === 'stored') return 'active'
   return 'watching'
 }
