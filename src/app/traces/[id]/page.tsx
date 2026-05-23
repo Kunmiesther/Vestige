@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { getPremiumTrace, ApiError } from '@/lib/api'
+import { loadTraceAccess, saveTraceAccess } from '@/lib/trace-access'
+import { useWallet } from '@/contexts/WalletContext'
 import {
   formatDate,
   formatRelative,
@@ -117,11 +119,13 @@ function Skeleton() {
 export default function TraceDetailPage() {
   const params = useParams()
   const traceId = typeof params.id === 'string' ? params.id : ''
+  const wallet = useWallet()
 
   const [trace, setTrace] = useState<ReasoningTrace | null>(null)
   const [paymentRequired, setPaymentRequired] = useState<PaymentChallenge | null>(null)
   const [tracePreview, setTracePreview] = useState<PremiumTracePreview | null>(null)
   const [paymentHeader, setPaymentHeader] = useState('')
+  const [showPaymentDetails, setShowPaymentDetails] = useState(false)
   const [paymentReceipt, setPaymentReceipt] = useState<TracePaymentReceipt | undefined>(undefined)
   const [unlocking, setUnlocking] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -132,7 +136,8 @@ export default function TraceDetailPage() {
   useEffect(() => {
     if (!traceId) return
     setLoading(true); setError(null)
-    getPremiumTrace(traceId)
+    const storedAccess = loadTraceAccess(traceId)
+    getPremiumTrace(traceId, undefined, storedAccess?.receiptId, wallet.address ?? undefined)
       .then(result => {
         if (result.status === 'payment_required') {
           setPaymentRequired(result.paymentRequired)
@@ -142,16 +147,23 @@ export default function TraceDetailPage() {
         }
         setTrace(result.trace)
         setPaymentReceipt(result.receipt)
+        if (result.receipt) saveTraceAccess(traceId, result.receipt)
         setPaymentRequired(null)
         setTracePreview(null)
       })
       .catch(e => setError(e instanceof ApiError ? e.message : 'Trace not found.'))
       .finally(() => setLoading(false))
-  }, [traceId])
+  }, [traceId, wallet.address])
 
   async function unlockTrace() {
+    if (!wallet.isConnected) {
+      setActionError('Connect a wallet before unlocking paid intelligence.')
+      return
+    }
+
     if (!traceId || !paymentHeader.trim()) {
-      setActionError('x402 payment authorization is required.')
+      setShowPaymentDetails(true)
+      setActionError('This environment needs a signed x402 payment authorization before access can be settled.')
       return
     }
 
@@ -159,7 +171,7 @@ export default function TraceDetailPage() {
     setActionError(null)
     setActionStatus('Verifying USDC payment...')
     try {
-      const result = await getPremiumTrace(traceId, paymentHeader.trim())
+      const result = await getPremiumTrace(traceId, paymentHeader.trim(), undefined, wallet.address ?? undefined)
       if (result.status === 'payment_required') {
         setPaymentRequired(result.paymentRequired)
         setTracePreview(result.tracePreview ?? tracePreview)
@@ -168,6 +180,7 @@ export default function TraceDetailPage() {
       }
       setTrace(result.trace)
       setPaymentReceipt(result.receipt)
+      if (result.receipt) saveTraceAccess(traceId, result.receipt)
       setPaymentRequired(null)
       setTracePreview(null)
       setActionStatus('Trace unlocked')
@@ -238,7 +251,7 @@ export default function TraceDetailPage() {
         }}>{tracePreview?.market ?? 'Premium reasoning trace'}</h1>
 
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.8, fontWeight: 300, marginBottom: 24 }}>
-          Access requires a settled USDC payment. Vestige unlocks the full audit trail only after the x402 facilitator verifies and settles the payment authorization.
+          Institutional intelligence requires unlock. Running analysis creates the trace; every read requires a settled USDC receipt, including the creator wallet.
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 1, background: 'var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 22 }}>
@@ -246,7 +259,9 @@ export default function TraceDetailPage() {
             { k: 'Price', v: `${paymentRequired.amount} ${paymentRequired.asset}` },
             { k: 'Network', v: paymentRequired.network },
             { k: 'Status', v: unlocking ? 'verifying' : 'payment required' },
-            { k: 'Demand', v: String(tracePreview?.demandScore ?? tracePreview?.unlockCount ?? 0) },
+            { k: 'Created', v: tracePreview?.createdAt ? formatDate(tracePreview.createdAt) : 'No data yet' },
+            { k: 'Unlocks', v: String(tracePreview?.unlockCount ?? 0) },
+            { k: 'USDC generated', v: tracePreview?.totalUsdcGenerated ?? '0.00' },
           ].map(item => (
             <div key={item.k} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
               <div className="mono-label" style={{ marginBottom: 5 }}>{item.k}</div>
@@ -255,23 +270,108 @@ export default function TraceDetailPage() {
           ))}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div>
-            <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>x402 payment authorization</label>
-            <textarea
-              value={paymentHeader}
-              onChange={event => setPaymentHeader(event.target.value)}
-              disabled={unlocking}
-              rows={4}
-              placeholder="Paste signed x-payment header"
-              style={{
-                width: '100%', background: 'rgba(5,5,7,0.8)',
-                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11,
-                color: 'var(--text-primary)', outline: 'none', resize: 'vertical', lineHeight: 1.7,
-              }}
-            />
+        {tracePreview?.creatorWalletAddress && (
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
+            marginBottom: 18, wordBreak: 'break-all', lineHeight: 1.7,
+          }}>
+            Creator wallet {tracePreview.creatorWalletAddress}
           </div>
+        )}
+
+        <div className="card" style={{
+          padding: '16px 18px',
+          borderColor: 'rgba(179,136,255,0.18)',
+          background: 'rgba(5,5,7,0.58)',
+          marginBottom: 22,
+        }}>
+          <div className="mono-label" style={{ marginBottom: 10 }}>Locked preview</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }} className="locked-preview-grid">
+            {[
+              { k: 'Alignment', v: 'Sealed' },
+              { k: 'Pressure', v: 'Sealed' },
+              { k: 'Volatility', v: 'Sealed' },
+              { k: 'Catalyst', v: 'Sealed' },
+            ].map(item => (
+              <div key={item.k} style={{
+                minHeight: 68,
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                padding: '12px 12px',
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01))',
+              }}>
+                <div className="mono-label" style={{ marginBottom: 8 }}>{item.k}</div>
+                <div style={{
+                  fontFamily: 'var(--font-display)', fontSize: 16, color: 'var(--text-tertiary)',
+                  textTransform: 'uppercase', filter: 'blur(2px)', opacity: 0.5,
+                }}>{item.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10,
+          marginBottom: 22,
+        }}>
+          {['Committee debate', 'Positioning state', 'Export package'].map(label => (
+            <div key={label} style={{
+              minHeight: 96,
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)',
+              background: 'linear-gradient(135deg, rgba(179,136,255,0.08), rgba(204,255,0,0.03))',
+              padding: '14px 16px',
+              position: 'relative',
+              overflow: 'hidden',
+            }}>
+              <div className="mono-label" style={{ marginBottom: 10 }}>{label}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, filter: 'blur(3px)', opacity: 0.5 }}>
+                <span style={{ height: 8, width: '90%', background: 'var(--border-hover)', borderRadius: 2 }} />
+                <span style={{ height: 8, width: '70%', background: 'var(--border-hover)', borderRadius: 2 }} />
+                <span style={{ height: 8, width: '82%', background: 'var(--border-hover)', borderRadius: 2 }} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)',
+            background: 'rgba(255,255,255,0.025)',
+            padding: '14px 16px',
+          }}>
+            <div className="mono-label" style={{ marginBottom: 8 }}>Payment rail</div>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, fontWeight: 300, marginBottom: 12 }}>
+              Vestige issued an x402 USDC challenge for this trace. Submit a signed payment authorization from the connected wallet to settle access and attach a receipt to the audit trail.
+            </p>
+            <button
+              onClick={() => setShowPaymentDetails(value => !value)}
+              className="btn-ghost"
+              style={{ justifyContent: 'center' }}
+            >
+              {showPaymentDetails ? 'Hide payment authorization' : 'Show payment authorization'}
+            </button>
+          </div>
+
+          {showPaymentDetails && (
+            <div>
+              <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>Signed x402 payment authorization</label>
+              <textarea
+                value={paymentHeader}
+                onChange={event => setPaymentHeader(event.target.value)}
+                disabled={unlocking}
+                rows={4}
+                placeholder="Paste signed x-payment header"
+                style={{
+                  width: '100%', background: 'rgba(5,5,7,0.8)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                  padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11,
+                  color: 'var(--text-primary)', outline: 'none', resize: 'vertical', lineHeight: 1.7,
+                }}
+              />
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button
@@ -321,12 +421,20 @@ export default function TraceDetailPage() {
 
   const steps = [...trace.reasoningSteps].sort((a, b) => a.order - b.order)
   const total = steps.length
-  const markdown = traceToMarkdown(trace, steps)
-  const json = JSON.stringify(trace, null, 2)
-  const summary = traceToSummary(trace)
+  const markdown = trace.locked ? '' : traceToMarkdown(trace, steps)
+  const json = trace.locked ? '' : JSON.stringify(trace, null, 2)
+  const summary = trace.locked ? '' : traceToSummary(trace)
   const auditMetrics = deriveAuditMetrics(trace)
   const receipts = uniqueReceipts([...(trace.paymentReceipts ?? []), ...(paymentReceipt ? [paymentReceipt] : [])])
   const unlockCount = Math.max(traceUnlockCount(trace), receipts.length)
+
+  function gatedAction(action: () => void) {
+    if (!trace || trace.locked) {
+      setActionError('Unlock trace to export intelligence.')
+      return
+    }
+    action()
+  }
 
   return (
     <main style={{ padding: '40px 32px 100px', maxWidth: 1200, margin: '0 auto' }}>
@@ -352,7 +460,7 @@ export default function TraceDetailPage() {
           <AccessBadge label={traceAccessLabel(trace)} />
           <StatusBadge status={trace.status} />
           <LocalAuditBadge />
-          {receipts.length > 0 && <span className="audit-badge">Paid access</span>}
+          {trace.locked ? <span className="audit-badge">Locked</span> : receipts.length > 0 && <span className="audit-badge">Paid access</span>}
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)',
             marginLeft: 'auto', letterSpacing: '0.04em',
@@ -479,7 +587,18 @@ export default function TraceDetailPage() {
             </div>
           </div>
 
-          {trace.catalysts.length > 0 && (
+          {trace.locked ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12 }} className="locked-trace-grid">
+              {['Committee reasoning', 'Agent outputs', 'Catalysts', 'Verdict'].map(label => (
+                <div key={label} className="card" style={{ padding: '18px 20px', minHeight: 120, background: 'rgba(255,255,255,0.02)', filter: 'blur(2px)', opacity: 0.55 }}>
+                  <div className="mono-label" style={{ marginBottom: 8 }}>{label}</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
+                    Unlock trace to view the underlying intelligence.
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : trace.catalysts.length > 0 && (
             <Block label="Catalysts">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {trace.catalysts.map((c, i) => (
@@ -492,7 +611,7 @@ export default function TraceDetailPage() {
             </Block>
           )}
 
-          {trace.risks.length > 0 && (
+          {!trace.locked && trace.risks.length > 0 && (
             <Block label="Risks">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {trace.risks.map((r, i) => (
@@ -597,25 +716,25 @@ export default function TraceDetailPage() {
                 }}>{actionStatus}</div>
               )}
 
-              <button onClick={() => copyText(summary, 'Summary')} className="btn-ghost" style={{ justifyContent: 'center' }}>
+              <button onClick={() => gatedAction(() => copyText(summary, 'Summary'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-ghost" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Copy summary
               </button>
-              <button onClick={() => copyText(markdown, 'Markdown')} className="btn-ghost" style={{ justifyContent: 'center' }}>
+              <button onClick={() => gatedAction(() => copyText(markdown, 'Markdown'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-ghost" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Copy markdown
               </button>
-              <button onClick={() => copyText(json, 'JSON')} className="btn-ghost" style={{ justifyContent: 'center' }}>
+              <button onClick={() => gatedAction(() => copyText(json, 'JSON'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-ghost" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Copy JSON
               </button>
-              <button onClick={() => download(`${trace.assetSymbol}-${trace.id}.json`, json, 'application/json')} className="btn-ghost" style={{ justifyContent: 'center' }}>
+              <button onClick={() => gatedAction(() => download(`${trace.assetSymbol}-${trace.id}.json`, json, 'application/json'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-ghost" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Export JSON
               </button>
-              <button onClick={() => download(`${trace.assetSymbol}-${trace.id}.md`, markdown, 'text/markdown')} className="btn-primary" style={{ justifyContent: 'center' }}>
+              <button onClick={() => gatedAction(() => download(`${trace.assetSymbol}-${trace.id}.md`, markdown, 'text/markdown'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-primary" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Download report
               </button>
             </div>
           </div>
 
-          {trace.verdict && (
+          {!trace.locked && trace.verdict && (
             <div className="card" style={{ padding: '18px 20px' }}>
               <div className="mono-label" style={{ marginBottom: 14 }}>Verdict</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -656,7 +775,7 @@ export default function TraceDetailPage() {
             </div>
           )}
 
-          {receipts.length > 0 && (
+          {!trace.locked && receipts.length > 0 && (
             <div className="card" style={{ padding: '18px 20px' }}>
               <div className="mono-label" style={{ marginBottom: 14 }}>Transaction receipt</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -696,6 +815,7 @@ export default function TraceDetailPage() {
       <style>{`
         @media(max-width:768px){
           main > div:last-of-type { grid-template-columns: 1fr !important; }
+          .locked-trace-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
     </main>

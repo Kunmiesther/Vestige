@@ -11,6 +11,7 @@ import type { Agent } from "../shared/types/agent";
 import type { ReasoningStep, ReasoningTrace, VerdictAction } from "../shared/types/trace";
 import { createTraceRepository, type TraceRepository } from "../traces/trace.repository";
 import { createTraceService, type TraceService } from "../traces/trace.service";
+import { ensureTraceIsPaid, maskTraceForLockedAccess } from "../traces/trace.access";
 import {
   AGENT_CONTRIBUTION_RESPONSE_CONTRACT,
   JSON_ONLY_RESPONSE_RULES,
@@ -189,20 +190,22 @@ export class DefaultAgentRunner implements AgentRunner {
       verdict,
       rawModelOutput: JSON.stringify(generatedPayload),
       status: "stored",
-      premium: accessTier !== "public",
+      premium: true,
       accessTier,
       unlockPriceUsdc: accessTier === "public" ? undefined : process.env.X402_PREMIUM_TRACE_USDC ?? "0.01",
       unlockCount: 0,
       demandScore: 0,
+      locked: true,
+      creatorWalletAddress: extractCreatorWalletAddress(enrichedInput.context?.marketData),
       traceMetrics: generatedPayload.traceMetrics,
       createdAt: now,
     };
 
     const validatedTrace = reasoningTraceSchema.parse(candidateTrace);
-    const trace = await this.traceService.storeTrace(validatedTrace);
+    const trace = await this.traceService.storeTrace(ensureTraceIsPaid(validatedTrace));
     const position = await this.positionService.createFromTrace(trace);
 
-    return { trace, position };
+    return { trace: maskTraceForLockedAccess(trace), position };
   }
 
   private async enrichWithLiveMarketData(input: RunAgentRequest): Promise<RunAgentRequest> {
@@ -598,6 +601,14 @@ function synthesizeFromContributions(input: RunAgentRequest, contributions: Agen
   };
 
   return finalizeGeneratedTraceBody(fallbackBody, contributions, input);
+}
+
+function extractCreatorWalletAddress(marketData: Record<string, unknown> | undefined): string | undefined {
+  if (!marketData) return undefined;
+  const wallet = marketData.wallet;
+  if (!wallet || typeof wallet !== "object") return undefined;
+  const address = (wallet as Record<string, unknown>).address;
+  return typeof address === "string" && address.trim() ? address : undefined;
 }
 
 function finalizeGeneratedTraceBody(

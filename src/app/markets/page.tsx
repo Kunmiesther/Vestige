@@ -33,6 +33,16 @@ function Skeleton() {
   )
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error('Timed out')), ms)
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => window.clearTimeout(timeout))
+  })
+}
+
 export default function MarketsPage() {
   const wallet = useWallet()
   const [traces, setTraces] = useState<ReasoningTrace[]>([])
@@ -42,6 +52,8 @@ export default function MarketsPage() {
   const [watchInput, setWatchInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [watchLoading, setWatchLoading] = useState(false)
+  const [watchError, setWatchError] = useState<string | null>(null)
+  const [watchRetryNonce, setWatchRetryNonce] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<'newest' | 'positioning'>('newest')
 
@@ -77,20 +89,33 @@ export default function MarketsPage() {
     async function loadSnapshots() {
       if (watchlist.length === 0) {
         setWatchSnapshots([])
+        setWatchLoading(false)
+        setWatchError(null)
         return
       }
       setWatchLoading(true)
-      const snapshots = await Promise.all(
-        watchlist.map(symbol => getMarketSnapshot(symbol).catch(() => null)),
-      )
-      if (!cancelled) {
-        setWatchSnapshots(snapshots.filter((snapshot): snapshot is MarketSnapshot => Boolean(snapshot)))
-        setWatchLoading(false)
+      setWatchError(null)
+      try {
+        const snapshots = await Promise.all(
+          watchlist.map(symbol => withTimeout(getMarketSnapshot(symbol), 8000).catch(() => null)),
+        )
+        if (!cancelled) {
+          const live = snapshots.filter((snapshot): snapshot is MarketSnapshot => Boolean(snapshot))
+          setWatchSnapshots(live)
+          if (live.length < watchlist.length) setWatchError('Some watchlist assets have no live quote yet.')
+        }
+      } catch {
+        if (!cancelled) {
+          setWatchSnapshots([])
+          setWatchError('Watchlist quotes timed out.')
+        }
+      } finally {
+        if (!cancelled) setWatchLoading(false)
       }
     }
     loadSnapshots()
     return () => { cancelled = true }
-  }, [watchlist])
+  }, [watchlist, watchRetryNonce])
 
   function addWatchSymbol() {
     if (!wallet.address) return
@@ -205,13 +230,27 @@ export default function MarketsPage() {
                 {watchlist.length === 0 && (
                   <div className="mono-label" style={{ color: 'var(--text-tertiary)', marginBottom: 0 }}>No tracked assets</div>
                 )}
+                {watchError && (
+                  <div style={{
+                    display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center',
+                    fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ember)',
+                    background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.22)',
+                    borderRadius: 'var(--radius)', padding: '8px 10px',
+                  }}>
+                    <span>{watchError}</span>
+                    <button onClick={() => setWatchRetryNonce(value => value + 1)} style={{
+                      background: 'transparent', border: 'none', color: 'var(--text-secondary)',
+                      cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10,
+                    }}>Retry</button>
+                  </div>
+                )}
                 {watchlist.map(symbol => {
                   const snapshot = watchSnapshots.find(item => item.symbol === symbol)
                   return (
                     <div key={symbol} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--violet)' }}>{symbol}</span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: snapshot?.change24hPercent && snapshot.change24hPercent < 0 ? 'var(--ember)' : 'var(--lime)' }}>
-                        {snapshot ? `$${snapshot.price.toLocaleString()} ${snapshot.change24hPercent ?? 0}%` : 'Loading'}
+                        {snapshot ? `$${snapshot.price.toLocaleString()} ${snapshot.change24hPercent ?? 0}%` : watchLoading ? 'Loading' : 'No data yet'}
                       </span>
                       <button onClick={() => removeWatchSymbol(symbol)} style={{
                         background: 'transparent',

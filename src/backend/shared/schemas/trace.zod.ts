@@ -82,6 +82,8 @@ export const reasoningTraceSchema = z.object({
   unlockPriceUsdc: z.string().optional(),
   unlockCount: z.number().int().nonnegative().optional(),
   demandScore: z.number().nonnegative().optional(),
+  locked: z.boolean().optional(),
+  creatorWalletAddress: z.string().optional(),
   paymentReceipts: z.array(tracePaymentReceiptSchema).optional(),
   traceMetrics: traceIntelligenceMetricsSchema.optional(),
   createdAt: z.string(),

@@ -112,6 +112,13 @@ export interface PaymentChallenge {
   description: string;
 }
 
+export interface TraceEconomyPreview {
+  unlockPriceUsdc?: string;
+  unlockCount?: number;
+  totalUsdcGenerated?: string;
+  creatorWalletAddress?: string;
+}
+
 export interface PremiumTracePreview {
   id: string;
   market: string;
@@ -119,6 +126,8 @@ export interface PremiumTracePreview {
   accessTier?: ReasoningTrace["accessTier"];
   unlockPriceUsdc?: string;
   unlockCount?: number;
+  totalUsdcGenerated?: string;
+  creatorWalletAddress?: string;
   demandScore?: number;
   createdAt: string;
 }

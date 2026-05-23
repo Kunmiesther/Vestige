@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createTraceRepository } from '@/backend/traces/trace.repository'
 import type { GetTraceResponse, ApiErrorResponse } from '@/backend/shared/types/api'
+import { maskTraceForLockedAccess } from '@/backend/traces/trace.access'
 
 interface RouteContext {
   params: Promise<{ traceId: string }>
@@ -22,7 +23,7 @@ export async function GET(
       )
     }
 
-    return NextResponse.json({ trace })
+    return NextResponse.json({ trace: maskTraceForLockedAccess(trace) })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to get trace'
     return NextResponse.json(

@@ -134,11 +134,15 @@ export type PremiumTraceAccessResult =
 export async function getPremiumTrace(
   traceId: string,
   paymentHeader?: string,
+  unlockReceiptId?: string,
+  walletAddress?: string,
 ): Promise<PremiumTraceAccessResult> {
   const res = await fetch(`/api/traces/${traceId}/premium`, {
     headers: {
       'Content-Type': 'application/json',
       ...(paymentHeader ? { 'x-payment': paymentHeader } : {}),
+      ...(unlockReceiptId ? { 'x-vestige-unlock-receipt': unlockReceiptId } : {}),
+      ...(walletAddress ? { 'x-vestige-wallet-address': walletAddress } : {}),
     },
   })
 

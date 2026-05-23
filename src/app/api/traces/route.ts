@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createTraceRepository } from '@/backend/traces/trace.repository'
 import type { ListTracesResponse, ListTracesQuery } from '@/backend/shared/types/api'
+import { maskTraceForLockedAccess } from '@/backend/traces/trace.access'
 
 export async function GET(request: Request): Promise<NextResponse<ListTracesResponse>> {
   try {
@@ -15,7 +16,7 @@ export async function GET(request: Request): Promise<NextResponse<ListTracesResp
     const repo = createTraceRepository()
     const traces = await repo.listTraces(query)
 
-    return NextResponse.json({ traces, nextCursor: undefined })
+    return NextResponse.json({ traces: traces.map(maskTraceForLockedAccess), nextCursor: undefined })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to list traces'
     return NextResponse.json(

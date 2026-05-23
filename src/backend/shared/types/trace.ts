@@ -81,6 +81,8 @@ export interface ReasoningTrace {
   unlockPriceUsdc?: string;
   unlockCount?: number;
   demandScore?: number;
+  locked?: boolean;
+  creatorWalletAddress?: string;
   paymentReceipts?: TracePaymentReceipt[];
   traceMetrics?: TraceIntelligenceMetrics;
   createdAt: ISODateTime;

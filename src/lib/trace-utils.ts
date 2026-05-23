@@ -24,6 +24,7 @@ export function truncateHash(hash: string, chars = 10): string {
 }
 
 export function convictionState(trace: ReasoningTrace): string {
+  if (trace.locked) return 'LOCKED'
   const score = trace.verdict?.score
   if (trace.verdict?.action) return trace.verdict.action
   if (trace.traceMetrics?.convictionTemperature) return convictionTemperatureToState(trace.traceMetrics.convictionTemperature)
@@ -49,7 +50,7 @@ export function traceAccessTier(trace: ReasoningTrace): TraceAccessTier {
 }
 
 export function traceAccessLabel(trace: ReasoningTrace): string {
-  return traceAccessTier(trace).toUpperCase()
+  return trace.locked ? 'LOCKED' : traceAccessTier(trace).toUpperCase()
 }
 
 export function traceUnlockPrice(trace: ReasoningTrace): string {
@@ -61,7 +62,7 @@ export function traceUnlockCount(trace: ReasoningTrace): number {
 }
 
 export function metricLabel(value: number | undefined): string {
-  if (typeof value !== 'number') return 'Unknown'
+  if (typeof value !== 'number') return 'No data yet'
   if (value >= 0.75) return 'High'
   if (value >= 0.5) return 'Moderate'
   if (value >= 0.25) return 'Thin'
@@ -69,22 +70,30 @@ export function metricLabel(value: number | undefined): string {
 }
 
 export function deriveAuditMetrics(trace: ReasoningTrace) {
+  if (trace.locked || !trace.traceMetrics) {
+    return {
+      marketRegime: 'No data yet',
+      liquidityState: 'No data yet',
+      volatilityState: 'No data yet',
+      alignment: undefined,
+      pressure: undefined,
+      catalystStrength: undefined,
+      disagreement: undefined,
+      convictionTemperature: 'LOCKED',
+    }
+  }
+
   const score = trace.verdict?.score ?? (trace.confidence === 'high' ? 78 : trace.confidence === 'medium' ? 52 : 28)
-  const riskText = [...trace.risks, ...(trace.verdict?.invalidation ?? [])].join(' ').toLowerCase()
-  const catalystText = [...trace.catalysts, ...(trace.verdict?.primaryDrivers ?? [])].join(' ').toLowerCase()
-  const volatilityPressure = riskText.match(/volatility|range|liquidation|drawdown|tail|stress/g)?.length ?? 0
-  const liquidityPressure = riskText.match(/liquidity|thin|depth|dollar|rates|flow/g)?.length ?? 0
-  const catalystHits = catalystText.match(/launch|upgrade|unlock|deadline|etf|governance|flow|approval|catalyst/g)?.length ?? 0
 
   return {
-    marketRegime: trace.traceMetrics?.marketRegime ?? (score >= 81 ? 'expansion' : score >= 61 ? 'selective' : score >= 41 ? 'two-way' : 'stress'),
-    liquidityState: trace.traceMetrics?.liquidityState ?? (liquidityPressure >= 2 ? 'fragile' : score >= 61 ? 'supportive' : 'mixed'),
-    volatilityState: trace.traceMetrics?.volatilityState ?? (volatilityPressure >= 2 ? 'elevated' : volatilityPressure === 1 ? 'active' : 'contained'),
-    alignment: trace.traceMetrics?.alignment ?? clamp(score / 100),
-    pressure: trace.traceMetrics?.pressure ?? clamp((100 - score) / 100),
-    catalystStrength: trace.traceMetrics?.catalystStrength ?? clamp(catalystHits / 4),
-    disagreement: trace.traceMetrics?.disagreement ?? clamp((riskText.match(/conflict|mixed|unconfirmed|uncertain|contradict|missing/g)?.length ?? 0) / 4),
-    convictionTemperature: convictionState(trace),
+    marketRegime: trace.traceMetrics.marketRegime ?? 'No data yet',
+    liquidityState: trace.traceMetrics.liquidityState ?? 'No data yet',
+    volatilityState: trace.traceMetrics.volatilityState ?? 'No data yet',
+    alignment: trace.traceMetrics.alignment ?? clamp(score / 100),
+    pressure: trace.traceMetrics.pressure ?? clamp((100 - score) / 100),
+    catalystStrength: trace.traceMetrics.catalystStrength ?? undefined,
+    disagreement: trace.traceMetrics.disagreement ?? undefined,
+    convictionTemperature: trace.traceMetrics.convictionTemperature ?? convictionState(trace),
   }
 }
 
@@ -113,6 +122,9 @@ export function sideColor(s: PositionSide): string {
  * dedicated edge field exists on the backend type.
  */
 export function deriveEdge(trace: ReasoningTrace): string {
+  if (trace.locked) {
+    return `Locked intelligence. Unlock for ${trace.unlockPriceUsdc ?? '0.01'} USDC.`
+  }
   if (trace.reasoningSteps.length > 0) {
     const first = trace.reasoningSteps[0]
     return first.inference.length > 120

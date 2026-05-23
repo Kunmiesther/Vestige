@@ -28,7 +28,7 @@ export default function HomePage() {
             { label: 'Arc Testnet', val: 'Chain 5042002' },
             { label: 'Settlement', val: 'USDC' },
             { label: 'Traces', val: 'Live archive' },
-            { label: 'Win rate', val: 'Measured live' },
+            { label: 'Access', val: 'USDC gated' },
           ].map((t, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{
@@ -90,9 +90,8 @@ export default function HomePage() {
               fontFamily: 'var(--font-editorial)',
               fontStyle: 'italic',
             }}>
-              Vestige stores every reasoning step before entering a position.
-              Thesis, evidence, edge, risks - stored as an audit trail before the trade.
-              You see the logic. Then you decide.
+              Vestige turns agent committee research into paid onchain intelligence.
+              Analysis creates the trace; USDC settlement unlocks the reasoning, dissent, and export package.
             </p>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flexShrink: 0 }}>
@@ -116,10 +115,10 @@ export default function HomePage() {
           backdropFilter: 'blur(12px)',
         }}>
           {[
-            { label: 'Open markets', val: 'Live', color: 'var(--text-primary)' },
+            { label: 'Trace access', val: 'Paid', color: 'var(--text-primary)' },
             { label: 'Premium traces', val: 'USDC gated', color: 'var(--violet)' },
-            { label: 'Agent win rate', val: 'Tracked', color: 'var(--lime)' },
-            { label: 'USDC unlocks', val: 'Measured', color: 'var(--text-primary)' },
+            { label: 'Agent committee', val: 'Specialized', color: 'var(--lime)' },
+            { label: 'Receipts', val: 'Settled', color: 'var(--text-primary)' },
           ].map((s, i) => (
             <div key={s.label} style={{
               padding: '24px 28px',
@@ -165,7 +164,7 @@ export default function HomePage() {
               lineHeight: 1.8,
               fontWeight: 300,
             }}>
-              A prediction market intelligence system where transparency is the product.
+              A monetized onchain intelligence market where agent committee work is priced, settled, and audited in USDC.
             </p>
           </div>
           <div>
@@ -179,8 +178,8 @@ export default function HomePage() {
               color: 'var(--text-primary)',
               marginBottom: 40,
             }}>
-              Most AI trading is a<br />
-              <span style={{ color: 'var(--text-secondary)' }}>black box</span>{' '}
+              Most market commentary is a<br />
+              <span style={{ color: 'var(--text-secondary)' }}>free feed</span>{' '}
               <span className="editorial" style={{
                 fontSize: 'clamp(28px, 4.5vw, 50px)',
                 textTransform: 'none',
@@ -201,20 +200,20 @@ export default function HomePage() {
                 },
                 {
                   num: '02',
-                  title: 'Trace audit trail',
-                  body: 'Every analysis is stored as a structured reasoning trace with verdict, evidence, dissent, risk notes, and exportable reports.',
+                  title: 'Paid trace market',
+                  body: 'Every analysis creates a locked intelligence asset. Access requires USDC settlement before reasoning, dissent, and exports are revealed.',
                   color: 'var(--lime)',
                 },
                 {
                   num: '03',
-                  title: 'You read the logic',
-                  body: 'Thesis, evidence, risks, what would break the thesis. You see everything before deciding whether to follow or fade.',
+                  title: 'Unlock the logic',
+                  body: 'Thesis, evidence, risks, and invalidation stay sealed until the x402 payment receipt is verified.',
                   color: 'var(--ice)',
                 },
                 {
                   num: '04',
-                  title: 'Position stays auditable',
-                  body: 'Every status change — watching, entry, exit — is tracked against the reasoning that justified it. No retroactive editing.',
+                  title: 'Receipt-backed audit',
+                  body: 'Trace demand, paid unlocks, creator wallet, and settlement metadata make intelligence consumption economically visible.',
                   color: 'var(--ember)',
                 },
               ].map((item) => (
@@ -384,3 +383,4 @@ export default function HomePage() {
     </main>
   )
 }
+

@@ -374,6 +374,7 @@ function mapAgentRow(row: Record<string, unknown>): Agent {
 function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
   const paymentReceipts = asPaymentReceipts(row.payment_receipts ?? row.paymentReceipts) ?? [];
   const unlockCount = optionalNumber(row.unlock_count ?? row.unlockCount) ?? paymentReceipts.length;
+  const locked = row.locked === undefined ? true : asBoolean(row.locked);
   return {
     id: asString(row.id),
     agentId: asString(row.agent_id),
@@ -394,6 +395,8 @@ function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
     unlockPriceUsdc: optionalString(row.unlock_price_usdc ?? row.unlockPriceUsdc),
     unlockCount,
     demandScore: optionalNumber(row.demand_score ?? row.demandScore) ?? unlockCount,
+    locked,
+    creatorWalletAddress: optionalString(row.creator_wallet_address ?? row.creatorWalletAddress),
     paymentReceipts,
     traceMetrics: asTraceMetrics(row.trace_metrics ?? row.traceMetrics),
     createdAt: asString(row.created_at),
@@ -453,6 +456,8 @@ function toTraceRow(trace: ReasoningTrace, includeEconomyMetadata = true): Recor
     row.unlock_price_usdc = trace.unlockPriceUsdc;
     row.unlock_count = trace.unlockCount;
     row.demand_score = trace.demandScore;
+    row.locked = trace.locked ?? true;
+    row.creator_wallet_address = trace.creatorWalletAddress;
     row.payment_receipts = trace.paymentReceipts;
     row.trace_metrics = trace.traceMetrics;
   }

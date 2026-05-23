@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { getMarketSnapshot, listAgents, listTraces, runAgent, ApiError } from '@/lib/api'
 import { useWallet } from '@/contexts/WalletContext'
 import { restoreWalletPortfolioState } from '@/lib/wallet'
@@ -12,11 +13,13 @@ import {
   sideLabel,
   traceAccessLabel,
   traceUnlockCount,
+  traceUnlockPrice,
   deriveAuditMetrics,
   convictionState,
   scoreToConvictionState,
 } from '@/lib/trace-utils'
 import type { Agent, ReasoningTrace } from '@/lib/api'
+import type { TracePaymentReceipt } from '@/backend/shared/types/trace'
 
 function mostCommon(values: string[]): string | undefined {
   const counts = new Map<string, number>()
@@ -24,6 +27,14 @@ function mostCommon(values: string[]): string | undefined {
     counts.set(value, (counts.get(value) ?? 0) + 1)
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+}
+
+function recentActivityLabel(trace: ReasoningTrace, receipt?: TracePaymentReceipt): string {
+  if (receipt) {
+    return `${trace.assetSymbol} trace unlocked for ${receipt.amount} ${receipt.asset} on ${receipt.network}`
+  }
+  const unlocks = traceUnlockCount(trace)
+  return `${trace.assetSymbol} trace has ${unlocks} paid unlock${unlocks === 1 ? '' : 's'} at ${traceUnlockPrice(trace)} USDC`
 }
 
 // ─── Micro-badges ─────────────────────────────────────────────────────────────
@@ -460,6 +471,7 @@ function TraceRow({ trace, isNew }: { trace: ReasoningTrace; isNew: boolean }) {
 type Filter = 'all' | 'long' | 'short' | 'neutral'
 
 export default function DashboardPage() {
+  const router = useRouter()
   const [agents, setAgents]             = useState<Agent[]>([])
   const [traces, setTraces]             = useState<ReasoningTrace[]>([])
   const [newTraceIds, setNewTraceIds]   = useState<Set<string>>(new Set())
@@ -471,6 +483,7 @@ export default function DashboardPage() {
   const [toast, setToast]               = useState<ReasoningTrace | null>(null)
   const [filter, setFilter]             = useState<Filter>('all')
   const refreshRef                      = useRef<ReturnType<typeof setInterval> | null>(null)
+  const traceRefreshAttemptsRef        = useRef(0)
 
   const fetchAgents = useCallback(async () => {
     setLoadingAgents(true); setAgentsError(null)
@@ -485,7 +498,9 @@ export default function DashboardPage() {
     try {
       const { traces: data } = await listTraces({ limit: 50 })
       setTraces(data)
+      traceRefreshAttemptsRef.current = 0
     } catch (e) {
+      traceRefreshAttemptsRef.current += 1
       setTracesError(e instanceof ApiError ? e.message : 'Failed to load traces.')
     } finally {
       if (!silent) setLoadingTraces(false)
@@ -496,7 +511,10 @@ export default function DashboardPage() {
     fetchAgents()
     fetchTraces()
     // Silent background refresh every 30s
-    refreshRef.current = setInterval(() => fetchTraces(true), 30000)
+    refreshRef.current = setInterval(() => {
+      if (traceRefreshAttemptsRef.current >= 3) return
+      fetchTraces(true)
+    }, 30000)
     return () => { if (refreshRef.current) clearInterval(refreshRef.current) }
   }, [fetchAgents, fetchTraces])
 
@@ -505,6 +523,7 @@ export default function DashboardPage() {
     setToast(trace)
     setTraces(prev => [trace, ...prev])
     setNewTraceIds(prev => new Set([...prev, trace.id]))
+    router.push(`/traces/${trace.id}`)
     // Clear "new" highlight after 5s
     setTimeout(() => {
       setNewTraceIds(prev => { const s = new Set(prev); s.delete(trace.id); return s })
@@ -516,24 +535,34 @@ export default function DashboardPage() {
     return t.positionIntent.side === filter
   })
 
-  const receipts = traces.flatMap(trace => trace.paymentReceipts ?? [])
-  const totalUsdc = receipts.reduce((sum, receipt) => sum + (Number.parseFloat(receipt.amount) || 0), 0)
-  const paidUnlocks = receipts.length || traces.reduce((sum, trace) => sum + traceUnlockCount(trace), 0)
+  const paidUnlocks = traces.reduce((sum, trace) => sum + traceUnlockCount(trace), 0)
+  const totalUsdc = traces.reduce((sum, trace) => {
+    return sum + traceUnlockCount(trace) * (Number.parseFloat(traceUnlockPrice(trace)) || 0)
+  }, 0)
   const activeAnalysts = agents.filter(agent => agent.status === 'active').length
-  const convictionStates = traces.map(convictionState)
-  const dominantConviction = mostCommon(convictionStates) ?? 'No traces'
-  const averageVerdictScore = traces.length > 0
-    ? traces.reduce((sum, trace) => sum + (trace.verdict?.score ?? (trace.confidence === 'high' ? 78 : trace.confidence === 'medium' ? 52 : 28)), 0) / traces.length
+  const unlockedTraces = traces.filter(trace => !trace.locked)
+  const convictionStates = unlockedTraces.map(convictionState)
+  const dominantConviction = mostCommon(convictionStates) ?? 'No data yet'
+  const averageVerdictScore = unlockedTraces.length > 0
+    ? unlockedTraces.reduce((sum, trace) => sum + (trace.verdict?.score ?? 0), 0) / unlockedTraces.length
     : undefined
-  const averageConviction = traces.length > 0 ? scoreToConvictionState(averageVerdictScore) : 'No traces'
-  const marketRegime = mostCommon(traces.map(trace => deriveAuditMetrics(trace).marketRegime)) ?? 'No regime'
+  const averageConviction = unlockedTraces.length > 0 ? scoreToConvictionState(averageVerdictScore) : 'No data yet'
+  const marketRegime = mostCommon(unlockedTraces.map(trace => deriveAuditMetrics(trace).marketRegime)) ?? 'No data yet'
   const highestDemandTrace = traces
     .filter(trace => traceUnlockCount(trace) > 0)
     .sort((a, b) => traceUnlockCount(b) - traceUnlockCount(a))[0]
-  const recentPaidActivity = receipts
+  const receiptActivity = traces
+    .flatMap(trace => (trace.paymentReceipts ?? []).map(receipt => ({ trace, receipt })))
+    .sort((a, b) => new Date(b.receipt.unlockedAt).getTime() - new Date(a.receipt.unlockedAt).getTime())
+
+  const unlockActivity = traces
+    .filter(trace => traceUnlockCount(trace) > 0)
     .slice()
-    .sort((a, b) => new Date(b.unlockedAt).getTime() - new Date(a.unlockedAt).getTime())
-    .slice(0, 3)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+
+  const recentPaidActivity = receiptActivity.length > 0
+    ? receiptActivity.slice(0, 3)
+    : unlockActivity.slice(0, 3).map(trace => ({ trace, receipt: undefined }))
 
   return (
     <>
@@ -609,7 +638,7 @@ export default function DashboardPage() {
             { label: 'Conviction state', val: dominantConviction },
             { label: 'Market regime', val: marketRegime },
             { label: 'Highest demand', val: highestDemandTrace ? `${highestDemandTrace.assetSymbol} / ${traceUnlockCount(highestDemandTrace)} unlocks` : 'No paid unlocks yet' },
-            { label: 'Recent paid activity', val: recentPaidActivity[0] ? `${recentPaidActivity[0].amount} ${recentPaidActivity[0].asset} on ${recentPaidActivity[0].network}` : 'No paid unlocks yet' },
+            { label: 'Recent paid activity', val: recentPaidActivity[0] ? recentActivityLabel(recentPaidActivity[0].trace, recentPaidActivity[0].receipt) : 'No paid unlocks yet' },
           ].map(item => (
             <div key={item.label} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
               <div className="mono-label" style={{ marginBottom: 6 }}>{item.label}</div>
@@ -624,10 +653,9 @@ export default function DashboardPage() {
           <div className="card" style={{ padding: '14px 18px', marginBottom: 24 }}>
             <div className="mono-label" style={{ marginBottom: 10 }}>Protocol activity</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {recentPaidActivity.map(receipt => (
-                <div key={receipt.receiptId} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                  Wallet {receipt.payer ? `${receipt.payer.slice(0, 6)}...${receipt.payer.slice(-4)}` : 'unknown'} unlocked a premium trace for {receipt.amount} {receipt.asset}
-                  {receipt.txHash ? ` / ${receipt.txHash.slice(0, 10)}...` : ''}
+              {recentPaidActivity.map(({ trace, receipt }) => (
+                <div key={`${trace.id}-${receipt?.receiptId ?? trace.id}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                  {recentActivityLabel(trace, receipt)}
                 </div>
               ))}
             </div>

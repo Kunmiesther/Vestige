@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { createX402Service } from "@/backend/payments/x402.service";
 import { VestigeError } from "@/backend/shared/errors";
-import type { ApiErrorResponse, PaymentChallenge, PremiumTraceResponse } from "@/backend/shared/types/api";
+import type { ApiErrorResponse, PremiumTracePaymentRequiredResponse, PremiumTraceResponse } from "@/backend/shared/types/api";
+import {
+  buildLockedTracePreview,
+  hasReceiptForPayment,
+  maskTraceForLockedAccess,
+  traceUnlockCount,
+} from "@/backend/traces/trace.access";
 import { createTraceRepository } from "@/backend/traces/trace.repository";
 
 interface RouteContext {
@@ -11,10 +17,11 @@ interface RouteContext {
 export async function GET(
   request: Request,
   context: RouteContext,
-): Promise<NextResponse<PremiumTraceResponse | { paymentRequired: PaymentChallenge } | ApiErrorResponse>> {
+): Promise<NextResponse<PremiumTraceResponse | PremiumTracePaymentRequiredResponse | ApiErrorResponse>> {
   try {
     const { traceId } = await context.params;
-    const trace = await createTraceRepository().findTrace(traceId);
+    const repo = createTraceRepository();
+    const trace = await repo.findTrace(traceId);
     if (!trace) {
       return NextResponse.json(
         { error: { code: "TRACE_NOT_FOUND", message: "Trace not found." } },
@@ -22,8 +29,11 @@ export async function GET(
       );
     }
 
-    if (!trace.premium && trace.accessTier !== "premium" && trace.accessTier !== "institutional") {
-      return NextResponse.json({ trace });
+    const suppliedReceipt = request.headers.get("x-vestige-unlock-receipt");
+    const walletAddress = request.headers.get("x-vestige-wallet-address");
+    const existingReceipt = hasReceiptForPayment(trace, suppliedReceipt, walletAddress);
+    if (existingReceipt) {
+      return NextResponse.json({ trace: { ...trace, locked: false }, receipt: existingReceipt });
     }
 
     const access = await createX402Service().authorize(request.headers, `/api/traces/${traceId}/premium`);
@@ -31,16 +41,7 @@ export async function GET(
       return NextResponse.json(
         {
           paymentRequired: access.challenge,
-          tracePreview: {
-            id: trace.id,
-            market: trace.market,
-            assetSymbol: trace.assetSymbol,
-            accessTier: trace.accessTier ?? ((trace.verdict?.score ?? 0) >= 81 ? "institutional" : "premium"),
-            unlockPriceUsdc: trace.unlockPriceUsdc ?? access.challenge.amount,
-            unlockCount: trace.unlockCount ?? trace.paymentReceipts?.length ?? 0,
-            demandScore: trace.demandScore ?? 0,
-            createdAt: trace.createdAt,
-          },
+          tracePreview: buildLockedTracePreview(trace),
         },
         {
           status: 402,
@@ -52,24 +53,25 @@ export async function GET(
     }
 
     if (access.receipt) {
-      const updatedTrace = {
+      const persistedTrace = {
         ...trace,
+        locked: true,
         paymentReceipts: [...(trace.paymentReceipts ?? []), access.receipt],
-        unlockCount: (trace.unlockCount ?? trace.paymentReceipts?.length ?? 0) + 1,
+        unlockCount: traceUnlockCount(trace) + 1,
         demandScore: (trace.demandScore ?? 0) + 1,
       };
 
-      await createTraceRepository().updateTrace(updatedTrace).catch((error) => {
+      await repo.updateTrace(persistedTrace).catch((error) => {
         console.error("[vestige:x402:receipt-persist-failed]", {
           traceId,
           message: error instanceof Error ? error.message : "unknown error",
         });
       });
 
-      return NextResponse.json({ trace: updatedTrace, receipt: access.receipt });
+      return NextResponse.json({ trace: { ...persistedTrace, locked: false }, receipt: access.receipt });
     }
 
-    return NextResponse.json({ trace });
+    return NextResponse.json({ trace: maskTraceForLockedAccess(trace) });
   } catch (error) {
     const status = error instanceof VestigeError
       ? error.code === "X402_NOT_CONFIGURED" || error.code === "X402_FACILITATOR_NOT_CONFIGURED"
