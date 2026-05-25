@@ -5,16 +5,11 @@ export function traceUnlockPrice(trace: ReasoningTrace): string {
 }
 
 export function traceUnlockCount(trace: ReasoningTrace): number {
-  return trace.unlockCount ?? trace.paymentReceipts?.length ?? 0;
+  return confirmedReceipts(trace.paymentReceipts ?? []).length;
 }
 
 export function traceTotalUsdcGenerated(trace: ReasoningTrace): string {
-  const receipts = trace.paymentReceipts ?? [];
-  if (receipts.length === 0) {
-    const generated = traceUnlockCount(trace) * (Number.parseFloat(traceUnlockPrice(trace)) || 0);
-    return generated.toFixed(2);
-  }
-
+  const receipts = confirmedReceipts(trace.paymentReceipts ?? []);
   const total = receipts.reduce((sum, receipt) => sum + (Number.parseFloat(receipt.amount) || 0), 0);
   return total.toFixed(2);
 }
@@ -28,11 +23,11 @@ export function hasReceiptForPayment(
   if (!normalized) return undefined;
   const normalizedWallet = normalizeAddress(walletAddress);
 
-  return trace.paymentReceipts?.find((receipt) => {
+  return confirmedReceipts(trace.paymentReceipts ?? []).find((receipt) => {
     const receiptMatches = normalizeReceiptIdentifier(receipt) === normalized ||
       receipt.receiptId === normalized ||
       receipt.txHash === normalized ||
-      receipt.facilitatorReference === normalized;
+      receipt.txHash === normalized;
     if (!receiptMatches) return false;
 
     const receiptPayer = normalizeAddress(receipt.payer);
@@ -101,7 +96,7 @@ function normalizePaymentHeader(value: string | null): string | undefined {
     const parsed = JSON.parse(trimmed) as unknown;
     if (parsed && typeof parsed === "object") {
       const record = parsed as Record<string, unknown>;
-      const candidate = record.receiptId ?? record.txHash ?? record.facilitatorReference ?? record.id;
+      const candidate = record.txHash ?? record.receiptId ?? record.id;
       if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
     }
   } catch {}
@@ -110,7 +105,14 @@ function normalizePaymentHeader(value: string | null): string | undefined {
 }
 
 function normalizeReceiptIdentifier(receipt: TracePaymentReceipt): string {
-  return receipt.receiptId || receipt.txHash || receipt.facilitatorReference || receipt.unlockedAt;
+  return receipt.txHash || receipt.receiptId;
+}
+
+function confirmedReceipts(receipts: TracePaymentReceipt[]): TracePaymentReceipt[] {
+  return receipts.filter((receipt) =>
+    receipt.settlementStatus === "confirmed" &&
+    /^0x[0-9a-fA-F]{64}$/.test(receipt.txHash ?? receipt.receiptId),
+  );
 }
 
 function normalizeAddress(value: string | null | undefined): string | undefined {

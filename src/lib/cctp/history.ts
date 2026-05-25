@@ -1,4 +1,4 @@
-export type BridgeMode = "live" | "simulation";
+export type BridgeMode = "live";
 export type BridgeTimelineState = "quoted" | "submitted" | "pending" | "attesting" | "completed" | "failed";
 
 export interface BridgeHistoryEntry {
@@ -14,6 +14,8 @@ export interface BridgeHistoryEntry {
   message?: string;
   transferId?: string;
   quoteId?: string;
+  sourceTxHash?: string;
+  destinationTxHash?: string;
 }
 
 const BRIDGE_HISTORY_PREFIX = "vestige_cctp_bridge_history";
@@ -53,7 +55,7 @@ function isBridgeHistoryEntry(value: unknown): value is BridgeHistoryEntry {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return typeof record.id === "string"
-    && (record.mode === "live" || record.mode === "simulation")
+    && record.mode === "live"
     && typeof record.sourceChainId === "number"
     && typeof record.destinationChainId === "number"
     && typeof record.amount === "string"

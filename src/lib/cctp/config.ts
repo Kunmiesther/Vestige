@@ -1,4 +1,5 @@
 import { ARC_TESTNET } from "@/lib/arc";
+import { CCTP_ARC, CCTP_SOURCE_CHAINS } from "@/backend/bridge/cctp.constants";
 
 export interface CctpBridgeConfig {
   configured: boolean;
@@ -10,7 +11,10 @@ export interface CctpBridgeConfig {
   destinationChainId: number;
 }
 
-export const SUPPORTED_CCTP_SOURCE_CHAINS = [11155111, 84532, 421614] as const;
+export const CCTP_FAST_FINALITY_THRESHOLD = 1000;
+export const CCTP_ARC_TESTNET_DOMAIN = CCTP_ARC.domain;
+
+export const SUPPORTED_CCTP_SOURCE_CHAINS = Object.keys(CCTP_SOURCE_CHAINS).map(Number) as Array<keyof typeof CCTP_SOURCE_CHAINS>;
 
 function normalizeEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -42,9 +46,9 @@ export function getCctpBridgeConfig(): CctpBridgeConfig {
   }
 
   return {
-    configured: missing.length === 0,
+    configured: true,
     reason: missing.length > 0
-      ? `Missing configuration: ${missing.join(", ")}`
+      ? `Managed Circle bridge API unavailable: ${missing.join(", ")}. Self-custody CCTP remains available for injected wallets.`
       : undefined,
     apiUrl,
     apiKeyConfigured,
@@ -55,22 +59,18 @@ export function getCctpBridgeConfig(): CctpBridgeConfig {
 }
 
 export function isSupportedCctpSourceChain(chainId: number): boolean {
-  return SUPPORTED_CCTP_SOURCE_CHAINS.includes(chainId as typeof SUPPORTED_CCTP_SOURCE_CHAINS[number]);
+  return chainId in CCTP_SOURCE_CHAINS;
 }
 
 export function cctpChainLabel(chainId: number): string {
-  const map: Record<number, string> = {
-    11155111: "Ethereum Sepolia",
-    84532: "Base Sepolia",
-    421614: "Arbitrum Sepolia",
-    [ARC_TESTNET.chainId]: "Arc Testnet",
-  };
-  return map[chainId] ?? `Chain ${chainId}`;
+  if (chainId === ARC_TESTNET.chainId) return "Arc Testnet";
+  return CCTP_SOURCE_CHAINS[chainId as keyof typeof CCTP_SOURCE_CHAINS]?.label ?? `Chain ${chainId}`;
 }
 
 export function estimateBridgeCompletionMinutes(chainId: number): string {
-  if (chainId === 11155111) return "10-20 min";
-  if (chainId === 84532) return "8-15 min";
-  if (chainId === 421614) return "10-18 min";
-  return "10-20 min";
+  return CCTP_SOURCE_CHAINS[chainId as keyof typeof CCTP_SOURCE_CHAINS]?.eta ?? "10-20 min";
+}
+
+export function getCctpSourceChain(chainId: number): typeof CCTP_SOURCE_CHAINS[keyof typeof CCTP_SOURCE_CHAINS] | undefined {
+  return CCTP_SOURCE_CHAINS[chainId as keyof typeof CCTP_SOURCE_CHAINS];
 }

@@ -7,8 +7,10 @@ export interface GroqChatMessage {
 
 export interface GroqGenerateJsonInput {
   messages: GroqChatMessage[];
+  model?: string;
   temperature?: number;
   maxTokens?: number;
+  maxAttempts?: number;
 }
 
 export interface GroqGenerateJsonResult {
@@ -57,53 +59,83 @@ export class GroqHttpClient implements GroqClient {
   }
 
   async generateJsonResult(input: GroqGenerateJsonInput): Promise<GroqGenerateJsonResult> {
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: input.messages,
-        temperature: input.temperature ?? 0.2,
-        max_tokens: input.maxTokens ?? 1600,
-        response_format: { type: "json_object" },
-      }),
-    });
+    const maxAttempts = Math.max(1, input.maxAttempts ?? 3);
+    let lastError: VestigeError | undefined;
 
-    const payload = (await response.json()) as GroqChatCompletionResponse;
-
-    if (!response.ok) {
-      throw new VestigeError(
-        payload.error?.message ?? "Groq request failed.",
-        "GROQ_REQUEST_FAILED",
-      );
-    }
-
-    const content = payload.choices?.[0]?.message?.content;
-
-    if (!content) {
-      throw new VestigeError("Groq response did not include message content.", "GROQ_EMPTY_RESPONSE");
-    }
-
-    try {
-      const result = parseJsonContent(content);
-      if (result.repaired) {
-        console.warn("[vestige:groq:json-repaired]", {
-          repairSteps: result.repairSteps,
-          rawModelResponse: content,
-        });
-      }
-      return result;
-    } catch (error) {
-      console.error("[vestige:groq:invalid-json]", {
-        rawModelResponse: content,
-        error: error instanceof Error ? error.message : "unknown error",
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: input.model ?? this.model,
+          messages: input.messages,
+          temperature: input.temperature ?? 0.2,
+          max_tokens: input.maxTokens ?? 1600,
+          response_format: { type: "json_object" },
+        }),
       });
-      throw error;
+
+      const payload = (await response.json().catch(() => ({}))) as GroqChatCompletionResponse;
+
+      if (response.ok) {
+        const content = payload.choices?.[0]?.message?.content;
+
+        if (!content) {
+          throw new VestigeError("Groq response did not include message content.", "GROQ_EMPTY_RESPONSE");
+        }
+
+        try {
+          const result = parseJsonContent(content);
+          if (result.repaired) {
+            console.warn("[vestige:groq:json-repaired]", {
+              repairSteps: result.repairSteps,
+              rawModelResponse: content,
+            });
+          }
+          return result;
+        } catch (error) {
+          console.error("[vestige:groq:invalid-json]", {
+            rawModelResponse: content,
+            error: error instanceof Error ? error.message : "unknown error",
+          });
+          throw error;
+        }
+      }
+
+      const message = payload.error?.message ?? `Groq request failed (${response.status}).`;
+      lastError = new VestigeError(
+        message,
+        response.status === 429 || /rate|tpm|quota/i.test(message) ? "GROQ_RATE_LIMITED" : "GROQ_REQUEST_FAILED",
+      );
+
+      if (!isRetryableGroqFailure(response.status, message) || attempt === maxAttempts) {
+        throw lastError;
+      }
+
+      await sleep(retryDelayMs(response.headers.get("retry-after"), attempt));
     }
+
+    throw lastError ?? new VestigeError("Groq request failed.", "GROQ_REQUEST_FAILED");
   }
+}
+
+function isRetryableGroqFailure(status: number, message: string): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500 || /rate|tpm|temporar|timeout/i.test(message);
+}
+
+function retryDelayMs(retryAfter: string | null, attempt: number): number {
+  const retryAfterSeconds = retryAfter ? Number.parseFloat(retryAfter) : NaN;
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(8000, retryAfterSeconds * 1000);
+  }
+  return Math.min(8000, 350 * 2 ** (attempt - 1) + Math.floor(Math.random() * 200));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseJsonContent(content: string): GroqGenerateJsonResult {

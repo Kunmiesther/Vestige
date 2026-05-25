@@ -398,6 +398,7 @@ function mapTraceRow(row: Record<string, unknown>): ReasoningTrace {
     locked,
     creatorWalletAddress: optionalString(row.creator_wallet_address ?? row.creatorWalletAddress),
     paymentReceipts,
+    publicationReceipts: asPublicationReceipts(row.publication_receipts ?? row.publicationReceipts),
     traceMetrics: asTraceMetrics(row.trace_metrics ?? row.traceMetrics),
     createdAt: asString(row.created_at),
   };
@@ -459,6 +460,7 @@ function toTraceRow(trace: ReasoningTrace, includeEconomyMetadata = true): Recor
     row.locked = trace.locked ?? true;
     row.creator_wallet_address = trace.creatorWalletAddress;
     row.payment_receipts = trace.paymentReceipts;
+    row.publication_receipts = trace.publicationReceipts;
     row.trace_metrics = trace.traceMetrics;
   }
 
@@ -553,6 +555,22 @@ function asPaymentReceipts(value: unknown): ReasoningTrace["paymentReceipts"] {
       record.asset === "USDC" &&
       typeof record.network === "string" &&
       typeof record.unlockedAt === "string";
+  });
+}
+
+function asPublicationReceipts(value: unknown): ReasoningTrace["publicationReceipts"] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is NonNullable<ReasoningTrace["publicationReceipts"]>[number] => {
+    if (!item || typeof item !== "object") return false;
+    const record = item as Record<string, unknown>;
+    return typeof record.publicationId === "string" &&
+      typeof record.network === "string" &&
+      typeof record.publisher === "string" &&
+      typeof record.message === "string" &&
+      typeof record.signature === "string" &&
+      typeof record.contentDigest === "string" &&
+      (record.storage === "irys" || record.storage === "ipfs" || record.storage === "local") &&
+      typeof record.publishedAt === "string";
   });
 }
 

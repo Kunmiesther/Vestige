@@ -17,6 +17,8 @@ import type {
   PaymentChallenge,
   PremiumTracePaymentRequiredResponse,
   PremiumTraceResponse,
+  PublishTraceRequest,
+  PublishTraceResponse,
   GetMarketSnapshotResponse,
   CctpQuoteRequest,
   CctpQuoteResponse,
@@ -133,22 +135,27 @@ export type PremiumTraceAccessResult =
 
 export async function getPremiumTrace(
   traceId: string,
-  paymentHeader?: string,
   unlockReceiptId?: string,
   walletAddress?: string,
 ): Promise<PremiumTraceAccessResult> {
   const res = await fetch(`/api/traces/${traceId}/premium`, {
     headers: {
       'Content-Type': 'application/json',
-      ...(paymentHeader ? { 'x-payment': paymentHeader } : {}),
       ...(unlockReceiptId ? { 'x-vestige-unlock-receipt': unlockReceiptId } : {}),
       ...(walletAddress ? { 'x-vestige-wallet-address': walletAddress } : {}),
     },
   })
 
   if (res.status === 402) {
-    const body = await res.json() as PremiumTracePaymentRequiredResponse
-    return { status: 'payment_required', paymentRequired: body.paymentRequired, tracePreview: body.tracePreview }
+    const body = await res.json() as Partial<PremiumTracePaymentRequiredResponse & ApiErrorResponse>
+    if (body.paymentRequired) {
+      return { status: 'payment_required', paymentRequired: body.paymentRequired, tracePreview: body.tracePreview }
+    }
+    throw new ApiError(
+      body.error?.code ?? 'PAYMENT_VERIFICATION_FAILED',
+      body.error?.message ?? 'Payment could not be verified on Arc.',
+      res.status,
+    )
   }
 
   if (!res.ok) {
@@ -168,6 +175,13 @@ export async function getPremiumTrace(
 
 
 // ─── Positions ───────────────────────────────────────────────────────────────
+
+export async function publishTrace(traceId: string, request: PublishTraceRequest): Promise<PublishTraceResponse> {
+  return apiFetch<PublishTraceResponse>(`/api/traces/${traceId}/publish`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  })
+}
 
 /**
  * GET /api/positions?agentId=&isOpen=

@@ -5,11 +5,14 @@ export const confidenceLevelSchema = z.enum(["low", "medium", "high"]);
 export const timeHorizonSchema = z.enum(["intraday", "swing", "long-term"]);
 export const traceStatusSchema = z.enum(["draft", "stored", "failed"]);
 export const verdictActionSchema = z.enum([
-  "AVOID EXPOSURE",
-  "DEFENSIVE POSITIONING",
-  "RANGE CONDITIONS",
-  "ACCUMULATION BIAS",
-  "HIGH-CONVICTION EXPANSION",
+  "Momentum Favors Continuation",
+  "Structure Weakening",
+  "Conviction Divergence",
+  "Liquidity Trap Risk",
+  "Expansion Setup",
+  "Fragile Breakout",
+  "High Beta Rotation",
+  "Regime Shift Watch",
 ]);
 export const traceAccessTierSchema = z.enum(["public", "premium", "institutional"]);
 
@@ -19,11 +22,26 @@ export const tracePaymentReceiptSchema = z.object({
   amount: z.string(),
   asset: z.literal("USDC"),
   network: z.string(),
+  settlementStatus: z.enum(["submitted", "confirmed", "failed"]).optional(),
   payer: z.string().optional(),
   payTo: z.string().optional(),
   txHash: z.string().optional(),
   facilitatorReference: z.string().optional(),
   unlockedAt: z.string(),
+});
+
+export const tracePublicationReceiptSchema = z.object({
+  publicationId: z.string(),
+  network: z.string(),
+  publisher: z.string(),
+  message: z.string(),
+  signature: z.string(),
+  contentDigest: z.string(),
+  storage: z.enum(["irys", "ipfs", "local"]),
+  irysId: z.string().optional(),
+  ipfsCid: z.string().optional(),
+  txHash: z.string().optional(),
+  publishedAt: z.string(),
 });
 
 export const traceIntelligenceMetricsSchema = z.object({
@@ -85,6 +103,7 @@ export const reasoningTraceSchema = z.object({
   locked: z.boolean().optional(),
   creatorWalletAddress: z.string().optional(),
   paymentReceipts: z.array(tracePaymentReceiptSchema).optional(),
+  publicationReceipts: z.array(tracePublicationReceiptSchema).optional(),
   traceMetrics: traceIntelligenceMetricsSchema.optional(),
   createdAt: z.string(),
 });

@@ -2,7 +2,7 @@ import type { Agent, CreateAgentInput } from "./agent";
 import type { AgentPerformanceSnapshot } from "./performance";
 import type { MarketSnapshot } from "../../markets/market.types";
 import type { Follow, Position } from "./position";
-import type { ReasoningTrace, TracePaymentReceipt } from "./trace";
+import type { ReasoningTrace, TracePaymentReceipt, TracePublicationReceipt } from "./trace";
 
 export interface ApiErrorResponse {
   error: {
@@ -72,6 +72,7 @@ export interface CctpQuoteRequest {
   toChainId: number;
   amount: string;
   recipient: string;
+  walletAddress?: string;
   tokenAddress?: string;
   walletId?: string;
 }
@@ -84,6 +85,7 @@ export interface CctpQuoteResponse {
 
 export interface CctpTransferRequest extends CctpQuoteRequest {
   quoteId?: string;
+  sourceTxHash?: string;
 }
 
 export interface CctpTransferResponse {
@@ -104,12 +106,23 @@ export interface CctpBridgeStatusResponse {
 
 export interface PaymentChallenge {
   protocol: 'x402';
+  x402Version?: 1 | 2;
+  scheme?: 'exact';
   resource: string;
   amount: string;
   asset: 'USDC';
+  assetAddress?: string;
+  maxAmountRequired?: string;
+  maxTimeoutSeconds?: number;
   network: string;
   payTo: string;
   description: string;
+  mimeType?: string;
+  extra?: {
+    name?: string;
+    version?: string;
+    verifyingContract?: string;
+  };
 }
 
 export interface TraceEconomyPreview {
@@ -139,6 +152,21 @@ export interface PremiumTracePaymentRequiredResponse {
 
 export interface PremiumTraceResponse extends GetTraceResponse {
   receipt?: TracePaymentReceipt;
+}
+
+export interface PublishTraceRequest {
+  publisher: string;
+  signature: string;
+  message: string;
+  contentDigest: string;
+  publicationTxHash?: string;
+  paymentTxHash?: string;
+  unlockReceiptId?: string;
+}
+
+export interface PublishTraceResponse {
+  trace: ReasoningTrace;
+  receipt: TracePublicationReceipt;
 }
 
 export interface FollowPositionRequest {

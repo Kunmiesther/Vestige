@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useWallet } from '@/contexts/WalletContext'
 import { ARC_TESTNET } from '@/lib/arc'
-import { listSelfCustodyConnectors, type SelfCustodyConnectorId } from '@/lib/wallet'
+import { listSelfCustodyConnectors, requestInjectedProviderDiscovery, type SelfCustodyConnectorId } from '@/lib/wallet'
 
 interface WalletModalProps {
   onClose: () => void
@@ -21,6 +21,13 @@ export function WalletModal({ onClose }: WalletModalProps) {
   const [connecting, setConnecting] = useState<'google' | SelfCustodyConnectorId | null>(null)
   const [connectors, setConnectors] = useState(() => listSelfCustodyConnectors())
 
+  useEffect(() => {
+    requestInjectedProviderDiscovery()
+    setConnectors(listSelfCustodyConnectors())
+    const refresh = window.setTimeout(() => setConnectors(listSelfCustodyConnectors()), 300)
+    return () => window.clearTimeout(refresh)
+  }, [])
+
   async function handleGoogle() {
     setConnecting('google')
     const connected = await connectCircle()
@@ -29,7 +36,9 @@ export function WalletModal({ onClose }: WalletModalProps) {
   }
 
   function showSelfCustody() {
+    requestInjectedProviderDiscovery()
     setConnectors(listSelfCustodyConnectors())
+    window.setTimeout(() => setConnectors(listSelfCustodyConnectors()), 300)
     setView('self-custody')
   }
 
@@ -160,7 +169,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
               <button
                 key={connector.id}
                 onClick={() => handleInjected(connector.id)}
-                disabled={isConnecting}
+                disabled={isConnecting || !connector.available}
                 style={{
                   width: '100%', padding: '14px 18px',
                   background: 'transparent', border: '1px solid var(--border)',

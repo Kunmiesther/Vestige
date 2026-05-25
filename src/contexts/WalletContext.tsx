@@ -16,8 +16,11 @@ import {
   hasPendingCircleLoginRecovery,
   getPersistedCircleWallet,
   fetchWalletBalance,
+  requestInjectedProviderDiscovery,
   requestAccounts,
+  getAddress,
   getChainId,
+  getProvider,
   switchToArcNetwork,
   onAccountsChanged,
   onChainChanged,
@@ -25,7 +28,6 @@ import {
   loadPersistedWallet,
   clearPersistedWallet,
   restoreWalletPortfolioState,
-  creditWalletPortfolioBalance,
   type WalletState,
   type SelfCustodyConnectorId,
 } from '@/lib/wallet'
@@ -37,7 +39,6 @@ interface WalletContextValue extends WalletState {
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
-  applyLocalBalanceCredit: (amount: string) => void
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null)
@@ -47,6 +48,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<WalletState>({
     address: null,
     walletType: null,
+    connectorId: null,
+    activeAddress: null,
+    activeWalletType: null,
+    activeConnectorId: null,
+    activeProvider: null,
+    activeChainId: null,
     chainId: null,
     isConnected: false,
     isConnecting: false,
@@ -58,6 +65,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const cleanupRef = useRef<(() => void)[]>([])
   const injectedConnectorRef = useRef<SelfCustodyConnectorId | null>(null)
   const stateRef = useRef(state)
+  const listenersReadyRef = useRef(false)
 
   function patch(updates: Partial<WalletState>) {
     setState(prev => ({ ...prev, ...updates }))
@@ -73,24 +81,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const refreshBalance = useCallback(async () => {
     const s = await getStateSnapshot()
-    if (!s.address) return
+    const balanceAddress = s.activeWalletType === 'injected' && s.activeAddress ? s.activeAddress : s.address
+    if (!balanceAddress) return
     try {
-      const balance = await fetchWalletBalance(s.address)
+      const balance = await fetchWalletBalance(balanceAddress)
       patch({ balance })
     } catch {
       // Balance refresh is non-critical for wallet connection state.
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const applyLocalBalanceCredit = useCallback((amount: string) => {
-    const current = stateRef.current
-    if (!current.address) return
-    const parsed = Number.parseFloat(amount)
-    if (!Number.isFinite(parsed) || parsed <= 0) return
-
-    creditWalletPortfolioBalance(current.address, amount)
-    const currentBalance = Number.parseFloat(current.balance ?? '0') || 0
-    patch({ balance: (currentBalance + parsed).toFixed(2) })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -107,15 +105,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
           if (completed) {
             console.info('[vestige:wallet]', { step: 'circle-redirect-complete', address: completed.address })
-            const balance = await fetchWalletBalance(completed.address).catch(() => '0.00')
+            const activeInjectedAddress = await getAddress('browser').catch(() => null)
+            const activeInjectedChainId = activeInjectedAddress ? await getChainId('browser').catch(() => null) : null
+            const balance = await fetchWalletBalance(activeInjectedAddress ?? completed.address).catch(() => '0.00')
             persistWallet(completed.address, 'circle')
             await restoreWalletPortfolioState().catch(() => null)
             patch({
               address: completed.address,
               walletType: 'circle',
+              connectorId: null,
+              activeAddress: activeInjectedAddress ?? completed.address,
+              activeWalletType: activeInjectedAddress ? 'injected' : 'circle',
+              activeConnectorId: activeInjectedAddress ? 'browser' : null,
+              activeProvider: getProvider('browser'),
+              activeChainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
               isConnected: true,
-              isOnArc: true,
-              chainId: ARC_TESTNET.chainId,
+              isOnArc: activeInjectedAddress ? activeInjectedChainId === ARC_TESTNET.chainId : true,
+              chainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
               balance,
               isConnecting: false,
               error: null,
@@ -155,15 +161,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           return
         }
 
-        const balance = await fetchWalletBalance(restored.address).catch(() => '0.00')
+        const activeInjectedAddress = await getAddress('browser').catch(() => null)
+        const activeInjectedChainId = activeInjectedAddress ? await getChainId('browser').catch(() => null) : null
+        const balance = await fetchWalletBalance(activeInjectedAddress ?? restored.address).catch(() => '0.00')
         persistWallet(restored.address, 'circle')
         await restoreWalletPortfolioState().catch(() => null)
         patch({
           address: restored.address,
           walletType: 'circle',
+          connectorId: null,
+          activeAddress: activeInjectedAddress ?? restored.address,
+          activeWalletType: activeInjectedAddress ? 'injected' : 'circle',
+          activeConnectorId: activeInjectedAddress ? 'browser' : null,
+          activeProvider: getProvider('browser'),
+          activeChainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
           isConnected: true,
-          isOnArc: true,
-          chainId: ARC_TESTNET.chainId,
+          isOnArc: activeInjectedAddress ? activeInjectedChainId === ARC_TESTNET.chainId : true,
+          chainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
           balance,
           isConnecting: false,
           error: null,
@@ -172,18 +186,30 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       }
 
       if (saved.walletType === 'injected') {
-        getChainId()
+        const connectorId = saved.connectorId ?? 'browser'
+        requestInjectedProviderDiscovery()
+        injectedConnectorRef.current = connectorId
+        const liveAddress = await getAddress(connectorId).catch(() => saved.address)
+        const address = liveAddress ?? saved.address
+        getChainId(connectorId)
           .then(chainId => {
             if (cancelled) return null
+            if (!chainId) throw new Error('Injected wallet provider unavailable.')
             patch({
-              address: saved.address,
+              address,
               walletType: 'injected',
+              connectorId,
+              activeAddress: address,
+              activeWalletType: 'injected',
+              activeConnectorId: connectorId,
+              activeProvider: getProvider(connectorId) ?? getProvider('browser'),
+              activeChainId: chainId,
               isConnected: true,
               chainId,
               isOnArc: chainId === ARC_TESTNET.chainId,
               isConnecting: false,
             })
-            return fetchWalletBalance(saved.address)
+            return fetchWalletBalance(address)
           })
           .then(balance => {
             if (!cancelled && balance) patch({ balance })
@@ -192,6 +218,40 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             clearPersistedWallet()
             if (!cancelled) patch({ isConnecting: false })
           })
+
+        if (!listenersReadyRef.current) {
+          listenersReadyRef.current = true
+          const offAccounts = onAccountsChanged((accs) => {
+            if (accs.length === 0) {
+              clearPersistedWallet()
+              injectedConnectorRef.current = null
+              patch({
+                address: null,
+                isConnected: false,
+                walletType: null,
+                connectorId: null,
+                activeAddress: null,
+                activeWalletType: null,
+                activeConnectorId: null,
+                activeProvider: null,
+                activeChainId: null,
+                chainId: null,
+                isOnArc: false,
+                balance: null,
+              })
+            } else {
+              persistWallet(accs[0], 'injected', connectorId)
+              patch({ address: accs[0], connectorId, activeAddress: accs[0], activeWalletType: 'injected', activeConnectorId: connectorId, activeProvider: getProvider(connectorId) ?? getProvider('browser') })
+            }
+          }, connectorId)
+
+          const offChain = onChainChanged((chainIdHex) => {
+            const id = parseInt(chainIdHex, 16)
+            patch({ chainId: id, activeChainId: id, isOnArc: id === ARC_TESTNET.chainId })
+          }, connectorId)
+
+          cleanupRef.current.push(offAccounts, offChain)
+        }
       }
     }
 
@@ -202,18 +262,29 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const connectCircle = useCallback(async () => {
+    cleanupRef.current.forEach(fn => fn())
+    cleanupRef.current = []
+    listenersReadyRef.current = false
     patch({ isConnecting: true, error: null })
     try {
       const { address } = await provisionCircleWallet()
-      const balance = await fetchWalletBalance(address).catch(() => '0.00')
+      const activeInjectedAddress = await getAddress('browser').catch(() => null)
+      const activeInjectedChainId = activeInjectedAddress ? await getChainId('browser').catch(() => null) : null
+      const balance = await fetchWalletBalance(activeInjectedAddress ?? address).catch(() => '0.00')
       persistWallet(address, 'circle')
       await restoreWalletPortfolioState().catch(() => null)
       patch({
         address,
         walletType: 'circle',
+        connectorId: null,
+        activeAddress: activeInjectedAddress ?? address,
+        activeWalletType: activeInjectedAddress ? 'injected' : 'circle',
+        activeConnectorId: activeInjectedAddress ? 'browser' : null,
+        activeProvider: getProvider('browser'),
+        activeChainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
         isConnected: true,
-        isOnArc: true,
-        chainId: ARC_TESTNET.chainId,
+        isOnArc: activeInjectedAddress ? activeInjectedChainId === ARC_TESTNET.chainId : true,
+        chainId: activeInjectedChainId ?? ARC_TESTNET.chainId,
         balance,
         isConnecting: false,
         error: null,
@@ -229,6 +300,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const connectInjected = useCallback(async (connectorId: SelfCustodyConnectorId) => {
+    cleanupRef.current.forEach(fn => fn())
+    cleanupRef.current = []
+    listenersReadyRef.current = false
     patch({ isConnecting: true, error: null })
     try {
       const accounts = await requestAccounts(connectorId)
@@ -240,11 +314,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const balance = await fetchWalletBalance(address).catch(() => '0.00')
 
       injectedConnectorRef.current = connectorId
-      persistWallet(address, 'injected')
+      persistWallet(address, 'injected', connectorId)
       await restoreWalletPortfolioState().catch(() => null)
       patch({
         address,
         walletType: 'injected',
+        connectorId,
+        activeAddress: address,
+        activeWalletType: 'injected',
+        activeConnectorId: connectorId,
+        activeProvider: getProvider(connectorId) ?? getProvider('browser'),
+        activeChainId: chainId,
         isConnected: true,
         isOnArc,
         chainId,
@@ -257,19 +337,33 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         if (accs.length === 0) {
           clearPersistedWallet()
           injectedConnectorRef.current = null
-          patch({ address: null, isConnected: false, walletType: null, balance: null })
+          patch({
+            address: null,
+            isConnected: false,
+            walletType: null,
+            connectorId: null,
+            activeAddress: null,
+            activeWalletType: null,
+            activeConnectorId: null,
+            activeProvider: null,
+            activeChainId: null,
+            chainId: null,
+            isOnArc: false,
+            balance: null,
+          })
         } else {
-          persistWallet(accs[0], 'injected')
-          patch({ address: accs[0] })
+          persistWallet(accs[0], 'injected', connectorId)
+          patch({ address: accs[0], connectorId, activeAddress: accs[0], activeWalletType: 'injected', activeConnectorId: connectorId, activeProvider: getProvider(connectorId) ?? getProvider('browser') })
         }
       }, connectorId)
 
       const offChain = onChainChanged((chainIdHex) => {
         const id = parseInt(chainIdHex, 16)
-        patch({ chainId: id, isOnArc: id === ARC_TESTNET.chainId })
+        patch({ chainId: id, activeChainId: id, isOnArc: id === ARC_TESTNET.chainId })
       }, connectorId)
 
       cleanupRef.current.push(offAccounts, offChain)
+      listenersReadyRef.current = true
       return true
     } catch (err) {
       patch({
@@ -283,7 +377,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const switchToArc = useCallback(async () => {
     try {
       await switchToArcNetwork(injectedConnectorRef.current ?? undefined)
-      patch({ chainId: ARC_TESTNET.chainId, isOnArc: true, error: null })
+      patch({ chainId: ARC_TESTNET.chainId, activeChainId: ARC_TESTNET.chainId, isOnArc: true, error: null })
     } catch (err) {
       patch({ error: err instanceof Error ? err.message : 'Failed to switch network' })
     }
@@ -292,11 +386,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     clearPersistedWallet()
     injectedConnectorRef.current = null
+    listenersReadyRef.current = false
     cleanupRef.current.forEach(fn => fn())
     cleanupRef.current = []
     setState({
       address: null,
       walletType: null,
+      connectorId: null,
+      activeAddress: null,
+      activeWalletType: null,
+      activeConnectorId: null,
+      activeProvider: null,
+      activeChainId: null,
       chainId: null,
       isConnected: false,
       isConnecting: false,
@@ -320,7 +421,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       switchToArc,
       disconnect,
       refreshBalance,
-      applyLocalBalanceCredit,
     }}>
       {children}
     </WalletContext.Provider>

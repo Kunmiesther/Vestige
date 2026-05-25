@@ -13,7 +13,6 @@ import {
   sideLabel,
   traceAccessLabel,
   traceUnlockCount,
-  traceUnlockPrice,
   deriveAuditMetrics,
   convictionState,
   scoreToConvictionState,
@@ -33,8 +32,7 @@ function recentActivityLabel(trace: ReasoningTrace, receipt?: TracePaymentReceip
   if (receipt) {
     return `${trace.assetSymbol} trace unlocked for ${receipt.amount} ${receipt.asset} on ${receipt.network}`
   }
-  const unlocks = traceUnlockCount(trace)
-  return `${trace.assetSymbol} trace has ${unlocks} paid unlock${unlocks === 1 ? '' : 's'} at ${traceUnlockPrice(trace)} USDC`
+  return `${trace.assetSymbol} trace has paid unlock metadata but no receipt hash yet`
 }
 
 // ─── Micro-badges ─────────────────────────────────────────────────────────────
@@ -54,12 +52,14 @@ function SideBadge({ trace }: { trace: ReasoningTrace }) {
 
 function StateBadge({ trace }: { trace: ReasoningTrace }) {
   const label = trace.verdict?.action ?? convictionState(trace)
+  const constructive = label.includes('Momentum') || label.includes('Expansion') || label.includes('High Beta')
+  const risk = label.includes('Weakening') || label.includes('Liquidity Trap')
   return (
     <span style={{
       fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
-      textTransform: 'uppercase' as const, color: label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'var(--ember)' : 'var(--text-secondary)',
-      background: label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime-dim)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'var(--ember-dim)' : 'rgba(255,255,255,0.03)',
-      border: `1px solid ${label.includes('HIGH') || label.includes('ACCUMULATION') ? 'var(--lime-border)' : label.includes('AVOID') || label.includes('DEFENSIVE') ? 'rgba(255,107,53,0.2)' : 'var(--border)'}`,
+      textTransform: 'uppercase' as const, color: constructive ? 'var(--lime)' : risk ? 'var(--ember)' : 'var(--text-secondary)',
+      background: constructive ? 'var(--lime-dim)' : risk ? 'var(--ember-dim)' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${constructive ? 'var(--lime-border)' : risk ? 'rgba(255,107,53,0.2)' : 'var(--border)'}`,
       padding: '3px 9px', borderRadius: 3,
       textAlign: 'center',
     }}>{label}</span>
@@ -94,7 +94,6 @@ function RunModal({
   const [agentId, setAgentId]     = useState(agents[0]?.id ?? '')
   const [market, setMarket]       = useState('')
   const [asset, setAsset]         = useState('')
-  const [price, setPrice]         = useState('')
   const [headlines, setHeadlines] = useState('')
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState<string | null>(null)
@@ -120,7 +119,7 @@ function RunModal({
         market: market.trim(),
         assetSymbol: symbol,
         context: {
-          price: price ? parseFloat(price) : snapshot?.price,
+          price: snapshot?.price,
           marketSnapshot: snapshot ?? undefined,
           marketData: {
             wallet: wallet.address
@@ -235,18 +234,11 @@ function RunModal({
               style={iStyle} />
           </div>
 
-          {/* Asset + price */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <label style={lStyle}>Asset symbol</label>
-              <input type="text" value={asset} onChange={e => setAsset(e.target.value)}
-                disabled={loading} placeholder="BTC" style={iStyle} />
-            </div>
-            <div>
-              <label style={lStyle}>Current price (optional)</label>
-              <input type="number" value={price} onChange={e => setPrice(e.target.value)}
-                disabled={loading} placeholder="108400" style={iStyle} />
-            </div>
+          {/* Asset */}
+          <div>
+            <label style={lStyle}>Asset symbol</label>
+            <input type="text" value={asset} onChange={e => setAsset(e.target.value)}
+              disabled={loading} placeholder="BTC" style={iStyle} />
           </div>
 
           {/* Headlines */}
@@ -535,10 +527,11 @@ export default function DashboardPage() {
     return t.positionIntent.side === filter
   })
 
-  const paidUnlocks = traces.reduce((sum, trace) => sum + traceUnlockCount(trace), 0)
-  const totalUsdc = traces.reduce((sum, trace) => {
-    return sum + traceUnlockCount(trace) * (Number.parseFloat(traceUnlockPrice(trace)) || 0)
-  }, 0)
+  const receiptActivity = traces
+    .flatMap(trace => (trace.paymentReceipts ?? []).map(receipt => ({ trace, receipt })))
+    .sort((a, b) => new Date(b.receipt.unlockedAt).getTime() - new Date(a.receipt.unlockedAt).getTime())
+  const paidUnlocks = receiptActivity.length
+  const totalUsdc = receiptActivity.reduce((sum, { receipt }) => sum + (Number.parseFloat(receipt.amount) || 0), 0)
   const activeAnalysts = agents.filter(agent => agent.status === 'active').length
   const unlockedTraces = traces.filter(trace => !trace.locked)
   const convictionStates = unlockedTraces.map(convictionState)
@@ -551,10 +544,6 @@ export default function DashboardPage() {
   const highestDemandTrace = traces
     .filter(trace => traceUnlockCount(trace) > 0)
     .sort((a, b) => traceUnlockCount(b) - traceUnlockCount(a))[0]
-  const receiptActivity = traces
-    .flatMap(trace => (trace.paymentReceipts ?? []).map(receipt => ({ trace, receipt })))
-    .sort((a, b) => new Date(b.receipt.unlockedAt).getTime() - new Date(a.receipt.unlockedAt).getTime())
-
   const unlockActivity = traces
     .filter(trace => traceUnlockCount(trace) > 0)
     .slice()

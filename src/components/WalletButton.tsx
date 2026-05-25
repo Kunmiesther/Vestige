@@ -4,24 +4,28 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWallet } from '@/contexts/WalletContext'
 import { WalletModal } from './WalletModal'
 import { getCctpBridgeStatus, getCctpQuote, submitCctpTransfer, ApiError, type CctpBridgeStatusResponse } from '@/lib/api'
-import { loadCircleSession } from '@/lib/wallet'
-import { ARC_TESTNET, truncateAddress } from '@/lib/arc'
-import { cctpChainLabel, estimateBridgeCompletionMinutes } from '@/lib/cctp/config'
+import { getAddress, loadCircleSession, sendTransaction, switchToEthereumChain, waitForTransactionConfirmation } from '@/lib/wallet'
+import { ARC_TESTNET, arcTxUrl, truncateAddress } from '@/lib/arc'
+import { cctpChainLabel, estimateBridgeCompletionMinutes, getCctpSourceChain } from '@/lib/cctp/config'
 import { loadBridgeHistory, upsertBridgeHistory, type BridgeHistoryEntry, type BridgeMode, type BridgeTimelineState } from '@/lib/cctp/history'
+import { buildCctpSourceChainParams, encodeCctpBurnWithHook, encodeUsdcApproval, sourceExplorerTxUrl, sourceTokenMessengerAddress, sourceUsdcAddress } from '@/lib/cctp/transaction'
 
 export function WalletButton() {
-  const { address, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect, refreshBalance, applyLocalBalanceCredit } = useWallet()
+  const { address, activeAddress, activeWalletType, activeConnectorId, isConnected, isConnecting, isOnArc, walletType, connectorId, balance, switchToArc, disconnect, refreshBalance } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
   const [showBridge, setShowBridge] = useState(false)
   const [copied, setCopied] = useState(false)
+  const displayAddress = activeWalletType === 'injected' && activeAddress ? activeAddress : address
+  const displayWalletType = activeWalletType ?? walletType
+  const displayConnectorId = activeConnectorId ?? connectorId
   const modal = showModal ? <WalletModal onClose={() => setShowModal(false)} /> : null
-  const bridgeModal = showBridge && address ? <BridgeModal address={address} onClose={() => setShowBridge(false)} onComplete={refreshBalance} onSimulatedCredit={applyLocalBalanceCredit} /> : null
+  const bridgeModal = showBridge && displayAddress ? <BridgeModal address={displayAddress} walletType={displayWalletType} connectorId={displayConnectorId} onClose={() => setShowBridge(false)} onComplete={refreshBalance} /> : null
 
   async function copyAddress() {
-    if (!address) return
+    if (!displayAddress) return
     try {
-      await navigator.clipboard.writeText(address)
+      await navigator.clipboard.writeText(displayAddress)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1400)
     } catch {
@@ -70,7 +74,7 @@ export function WalletButton() {
   }
 
   // Wrong network warning
-  if (!isOnArc && walletType === 'injected') {
+  if (!isOnArc && activeWalletType === 'injected') {
     return (
       <button
         onClick={switchToArc}
@@ -107,7 +111,7 @@ export function WalletButton() {
           boxShadow: '0 0 6px rgba(204,255,0,0.5)',
           flexShrink: 0,
         }} />
-        {address ? truncateAddress(address) : '—'}
+        {displayAddress ? truncateAddress(displayAddress) : '—'}
         {balance && (
           <span className="wallet-balance-text" style={{ color: 'var(--text-tertiary)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
             {parseFloat(balance).toFixed(2)} USDC
@@ -130,14 +134,14 @@ export function WalletButton() {
             {/* Address */}
             <div style={{ padding: '8px 16px 12px', borderBottom: '1px solid var(--border)' }}>
               <div className="mono-label" style={{ marginBottom: 4 }}>
-                {walletType === 'circle' ? 'Circle Wallet' : 'Browser Wallet'}
+                {displayWalletType === 'circle' ? 'Circle Wallet' : 'Browser Wallet'}
               </div>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <div style={{
                   fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)',
                   wordBreak: 'break-all', lineHeight: 1.5, minWidth: 0, flex: 1,
-                }}>{address}</div>
-                {address && (
+                }}>{displayAddress}</div>
+                {displayAddress && (
                   <button
                     onClick={(event) => {
                       event.stopPropagation()
@@ -198,9 +202,9 @@ export function WalletButton() {
             </div>
 
             {/* Explorer link */}
-            {address && (
+            {displayAddress && (
               <a
-                href={`${ARC_TESTNET.explorerUrl}/address/${address}`}
+                href={`${ARC_TESTNET.explorerUrl}/address/${displayAddress}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
@@ -289,14 +293,16 @@ const BRIDGE_TIMELINE: Array<{ state: BridgeTimelineState; label: string }> = [
 
 function BridgeModal({
   address,
+  walletType,
+  connectorId,
   onClose,
   onComplete,
-  onSimulatedCredit,
 }: {
   address: string
+  walletType: ReturnType<typeof useWallet>['walletType']
+  connectorId: ReturnType<typeof useWallet>['connectorId']
   onClose: () => void
   onComplete: () => Promise<void>
-  onSimulatedCredit: (amount: string) => void
 }) {
   const [sourceChain, setSourceChain] = useState(SOURCE_CHAINS[0].chainId)
   const [amount, setAmount] = useState('')
@@ -315,7 +321,11 @@ function BridgeModal({
   const amountInvalid = !amount || !Number.isFinite(amountNumber) || amountNumber <= 0
   const selectedChain = SOURCE_CHAINS.find(chain => chain.chainId === sourceChain) ?? SOURCE_CHAINS[0]
   const estimatedCompletion = useMemo(() => estimateBridgeCompletionMinutes(sourceChain), [sourceChain])
-  const canSubmit = !configLoading && !isBusy && !amountInvalid
+  const canSubmit = !configLoading &&
+    !isBusy &&
+    !amountInvalid &&
+    Boolean(config?.configured) &&
+    (walletType === 'injected' || Boolean(config?.apiKeyConfigured && config.apiUrlConfigured))
 
   useEffect(() => {
     mountedRef.current = true
@@ -326,15 +336,13 @@ function BridgeModal({
         if (cancelled) return
         setConfig(status)
         if (!status.configured) {
-          setMode('simulation')
-          setMessage(status.reason ?? 'Live CCTP is unavailable. Simulation Mode is enabled.')
+          setMessage(status.reason ?? 'Live CCTP bridge is unavailable.')
         }
       })
       .catch(err => {
         if (cancelled) return
         setConfig(null)
-        setMode('simulation')
-        setMessage(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Bridge status unavailable. Simulation Mode is enabled.')
+        setMessage(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Bridge status unavailable.')
       })
       .finally(() => {
         if (!cancelled) setConfigLoading(false)
@@ -358,9 +366,13 @@ function BridgeModal({
     persistEntry(entry)
 
     try {
-      if (mode === 'simulation' || !config?.configured) {
-        await runSimulatedBridge(entry)
+      if (walletType === 'injected') {
+        await startSelfCustodyBridge(entry)
         return
+      }
+
+      if (!config?.configured || !config.apiKeyConfigured || !config.apiUrlConfigured) {
+        throw new Error(config?.reason ?? 'Managed Circle bridge API is unavailable.')
       }
 
       setState('quoting')
@@ -370,6 +382,7 @@ function BridgeModal({
         amount,
         recipient: address,
         walletId: session?.wallet?.id,
+        walletAddress: address,
       })
       setMessage(quote.message)
       persistEntry({ ...entry, status: 'quoted', quoteId: quote.quoteId, message: quote.message, updatedAt: new Date().toISOString() })
@@ -381,10 +394,15 @@ function BridgeModal({
         amount,
         recipient: address,
         walletId: session?.wallet?.id,
+        walletAddress: address,
         quoteId: quote.quoteId,
       })
       setMessage(transfer.transferId ? `${transfer.message} / ${transfer.transferId}` : transfer.message)
-      const nextState = transfer.status === 'pending' ? 'attesting' : 'completed'
+      const nextState = transfer.status === 'completed'
+        ? 'completed'
+        : transfer.status === 'attesting'
+          ? 'attesting'
+          : 'pending'
       setState(nextState)
       persistEntry({
         ...entry,
@@ -394,15 +412,82 @@ function BridgeModal({
         message: transfer.transferId ? `${transfer.message} / ${transfer.transferId}` : transfer.message,
         updatedAt: new Date().toISOString(),
       })
-      await onComplete().catch(() => undefined)
+      if (nextState === 'completed') await onComplete().catch(() => undefined)
     } catch (err) {
       if (!mountedRef.current) return
       const reason = err instanceof ApiError ? `${err.code}: ${err.message}` : 'Bridge transfer failed.'
-      setMode('simulation')
-      setMessage(`${reason} Simulation Mode is available for demo continuity.`)
-      setError(null)
-      await runSimulatedBridge({ ...entry, mode: 'simulation', message: reason })
+      setMessage(null)
+      setError(reason)
+      persistEntry({ ...entry, status: 'failed', message: reason, updatedAt: new Date().toISOString() })
     }
+  }
+
+  async function startSelfCustodyBridge(entry: BridgeHistoryEntry) {
+    const activeConnectorId = connectorId ?? 'browser'
+    const source = getCctpSourceChain(sourceChain)
+    if (!source) throw new Error('Unsupported CCTP source chain.')
+    const activeAddress = await getAddress(activeConnectorId)
+    if (!activeAddress || activeAddress.toLowerCase() !== address.toLowerCase()) {
+      throw new Error('Connected wallet does not match the bridge recipient.')
+    }
+
+    setState('quoting')
+    const quote = await getCctpQuote({
+      fromChainId: sourceChain,
+      toChainId: ARC_TESTNET.chainId,
+      amount,
+      recipient: address,
+      walletAddress: address,
+    })
+    setMessage(quote.message)
+    persistEntry({ ...entry, status: 'quoted', quoteId: quote.quoteId, message: quote.message, updatedAt: new Date().toISOString() })
+
+    await switchToEthereumChain(buildCctpSourceChainParams(sourceChain), activeConnectorId)
+    setState('pending')
+    const approvalHash = await sendTransaction({
+      from: address,
+      to: sourceUsdcAddress(sourceChain),
+      data: encodeUsdcApproval(sourceChain, amount),
+      value: '0x0',
+    }, activeConnectorId)
+    setMessage(`Approval submitted on ${source.label}: ${approvalHash}`)
+    persistEntry({ ...entry, status: 'submitted', quoteId: quote.quoteId, sourceTxHash: approvalHash, message: `USDC approval ${approvalHash}`, updatedAt: new Date().toISOString() })
+    await waitForTransactionConfirmation(approvalHash, activeConnectorId, { chainId: sourceChain, timeoutMs: 90000 })
+
+    const burnHash = await sendTransaction({
+      from: address,
+      to: sourceTokenMessengerAddress(sourceChain),
+      data: encodeCctpBurnWithHook({ sourceChainId: sourceChain, amount, mintRecipient: address }),
+      value: '0x0',
+    }, activeConnectorId)
+    setState('attesting')
+    setMessage(`Burn submitted on ${source.label}: ${burnHash}`)
+    persistEntry({ ...entry, status: 'attesting', quoteId: quote.quoteId, sourceTxHash: burnHash, message: `CCTP burn ${burnHash}`, updatedAt: new Date().toISOString() })
+    await waitForTransactionConfirmation(burnHash, activeConnectorId, { chainId: sourceChain, timeoutMs: 90000 })
+
+    const transfer = await submitCctpTransfer({
+      fromChainId: sourceChain,
+      toChainId: ARC_TESTNET.chainId,
+      amount,
+      recipient: address,
+      walletAddress: address,
+      quoteId: quote.quoteId,
+      sourceTxHash: burnHash,
+    })
+    const completed = transfer.status === 'completed'
+    setState(completed ? 'completed' : 'attesting')
+    persistEntry({
+      ...entry,
+      quoteId: quote.quoteId,
+      transferId: transfer.transferId,
+      sourceTxHash: burnHash,
+      destinationTxHash: completed ? transfer.transferId : undefined,
+      status: completed ? 'completed' : 'attesting',
+      message: transfer.message,
+      updatedAt: new Date().toISOString(),
+    })
+    setMessage(transfer.message)
+    if (completed) await onComplete().catch(() => undefined)
   }
 
   function createBridgeEntry(entryMode: BridgeMode): BridgeHistoryEntry {
@@ -425,37 +510,6 @@ function BridgeModal({
     setHistory(upsertBridgeHistory(address, entry))
   }
 
-  async function runSimulatedBridge(entry: BridgeHistoryEntry) {
-    setMode('simulation')
-    setState('quoting')
-    setMessage('Simulation Mode: quote prepared.')
-    persistEntry({ ...entry, mode: 'simulation', status: 'quoted', message: 'Simulation quote prepared.', updatedAt: new Date().toISOString() })
-    await delay(450)
-    if (!mountedRef.current) return
-    setState('pending')
-    setMessage('Simulation Mode: transfer submitted.')
-    persistEntry({ ...entry, mode: 'simulation', status: 'pending', message: 'Simulation transfer submitted.', updatedAt: new Date().toISOString() })
-    await delay(650)
-    if (!mountedRef.current) return
-    setState('attesting')
-    setMessage('Simulation Mode: attestation observed.')
-    persistEntry({ ...entry, mode: 'simulation', status: 'attesting', message: 'Simulation attestation observed.', updatedAt: new Date().toISOString() })
-    await delay(650)
-    if (!mountedRef.current) return
-    setState('completed')
-    setMessage('Simulation Mode: Arc USDC credited locally.')
-    const completed = {
-      ...entry,
-      mode: 'simulation' as const,
-      status: 'completed' as const,
-      transferId: entry.transferId ?? `sim-${Date.now()}`,
-      message: 'Simulation completed. Local balance adjusted for demo.',
-      updatedAt: new Date().toISOString(),
-    }
-    persistEntry(completed)
-    onSimulatedCredit(amountNumber.toFixed(2))
-  }
-
   const stateLabel: Record<BridgeState, string> = {
     idle: 'Ready',
     quoting: 'Requesting quote...',
@@ -464,24 +518,22 @@ function BridgeModal({
     completed: 'Completed',
   }
 
-  const statusColor = mode === 'simulation'
-    ? 'var(--ember)'
-    : config?.configured
-      ? 'var(--lime)'
-      : 'var(--text-tertiary)'
+  const statusColor = config?.configured
+    ? 'var(--lime)'
+    : 'var(--text-tertiary)'
 
   return (
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 220,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 'clamp(12px,4dvh,24px) 16px 16px',
         background: 'rgba(5,5,7,0.9)', backdropFilter: 'blur(10px)',
-        overflow: 'hidden',
+        overflowY: 'auto',
       }}
       onClick={event => event.target === event.currentTarget && onClose()}
     >
       <div style={{
-        width: '100%', maxWidth: 520, maxHeight: 'min(90vh, calc(100dvh - 32px))',
+        width: '100%', maxWidth: 520, maxHeight: 'calc(100dvh - 32px)',
         background: 'var(--bg-card)', border: '1px solid var(--border-hover)',
         borderRadius: 'var(--radius-lg)',
         boxShadow: '0 20px 80px rgba(0,0,0,0.55)',
@@ -500,10 +552,10 @@ function BridgeModal({
             <span style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
               textTransform: 'uppercase', color: statusColor,
-              background: mode === 'simulation' ? 'var(--ember-dim)' : config?.configured ? 'var(--lime-dim)' : 'rgba(255,255,255,0.03)',
-              border: `1px solid ${mode === 'simulation' ? 'rgba(255,107,53,0.22)' : config?.configured ? 'var(--lime-border)' : 'var(--border)'}`,
+              background: config?.configured ? 'var(--lime-dim)' : 'rgba(255,255,255,0.03)',
+              border: `1px solid ${config?.configured ? 'var(--lime-border)' : 'var(--border)'}`,
               padding: '4px 8px', borderRadius: 3, whiteSpace: 'nowrap',
-            }}>{configLoading ? 'Checking' : mode === 'simulation' ? 'Simulation Mode' : 'Live CCTP'}</span>
+            }}>{configLoading ? 'Checking' : 'Live CCTP'}</span>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, fontWeight: 300 }}>
             Move USDC from testnet source chains into the Arc Testnet wallet identity used by Vestige.
@@ -523,8 +575,8 @@ function BridgeModal({
           {(configLoading || message || config?.reason) && (
             <div style={{
               fontFamily: 'var(--font-mono)', fontSize: 11, color: statusColor,
-              background: mode === 'simulation' ? 'var(--ember-dim)' : 'rgba(255,255,255,0.03)',
-              border: `1px solid ${mode === 'simulation' ? 'rgba(255,107,53,0.22)' : 'var(--border)'}`,
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid var(--border)',
               borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
             }}>
               {configLoading ? 'Checking bridge configuration...' : message ?? config?.reason}
@@ -620,9 +672,9 @@ function BridgeModal({
             background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)',
             borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
           }}>
-            {mode === 'simulation'
-              ? 'Simulation Mode is explicit and local-only. It does not claim an onchain bridge transfer.'
-              : 'Live mode submits through the configured CCTP bridge API.'}
+            {walletType === 'injected'
+              ? `Self-custody mode submits approval and burn transactions on ${selectedChain.label}, then relays Circle attestation to Arc.`
+              : 'Circle wallet mode submits through the configured CCTP bridge API.'}
           </div>
 
           {error && (
@@ -652,8 +704,34 @@ function BridgeModal({
                         {item.amount} USDC / {cctpChainLabel(item.sourceChainId)} to {cctpChainLabel(item.destinationChainId)}
                       </div>
                       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
-                        {item.mode === 'simulation' ? 'Simulation Mode' : 'Live CCTP'} / {item.transferId ?? item.status}
+                        Live CCTP / {item.status}
                       </div>
+                      {(item.sourceTxHash || item.destinationTxHash) && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+                          {item.sourceTxHash && (
+                            <a
+                              href={sourceExplorerTxUrl(item.sourceChainId, item.sourceTxHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-ghost"
+                              style={{ fontSize: 9, padding: '4px 7px' }}
+                            >
+                              Source tx
+                            </a>
+                          )}
+                          {item.destinationTxHash && (
+                            <a
+                              href={arcTxUrl(item.destinationTxHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-ghost"
+                              style={{ fontSize: 9, padding: '4px 7px' }}
+                            >
+                              Arc tx
+                            </a>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: item.status === 'completed' ? 'var(--lime)' : 'var(--violet)', textTransform: 'uppercase' }}>
                       {item.status}
@@ -667,7 +745,7 @@ function BridgeModal({
 
         <div style={{
           padding: '14px 22px', borderTop: '1px solid var(--border)', flexShrink: 0,
-          display: 'flex', gap: 10, justifyContent: 'flex-end', background: 'rgba(5,5,7,0.78)',
+          display: 'flex', gap: 10, justifyContent: 'flex-end', background: 'rgba(5,5,7,0.78)', flexWrap: 'wrap',
         }}>
           <button onClick={onClose} className="btn-ghost">Close</button>
           <button
@@ -676,7 +754,7 @@ function BridgeModal({
             className="btn-primary"
             style={{ justifyContent: 'center', opacity: canSubmit ? 1 : 0.55, cursor: canSubmit ? 'pointer' : 'not-allowed' }}
           >
-            {configLoading ? 'Checking config...' : isBusy ? stateLabel[state] : mode === 'simulation' ? 'Simulate bridge' : 'Initiate bridge'}
+            {configLoading ? 'Checking config...' : isBusy ? stateLabel[state] : 'Initiate bridge'}
           </button>
         </div>
 

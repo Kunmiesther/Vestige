@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { getPremiumTrace, ApiError } from '@/lib/api'
-import { loadTraceAccess, saveTraceAccess } from '@/lib/trace-access'
+import { getPremiumTrace, publishTrace, ApiError } from '@/lib/api'
+import { getAddress, sendArcUsdcTransfer, sendX402PaymentTransaction, signMessage } from '@/lib/wallet'
+import { clearTraceAccess, loadTraceAccess, saveTraceAccess } from '@/lib/trace-access'
 import { useWallet } from '@/contexts/WalletContext'
 import {
   formatDate,
@@ -19,8 +20,31 @@ import {
   metricLabel,
   convictionState,
 } from '@/lib/trace-utils'
-import type { ReasoningTrace, TraceStatus, ReasoningStep, TracePaymentReceipt } from '@/backend/shared/types/trace'
+import { ARC_PUBLISH_FEE_USDC, ARC_PUBLISH_PAY_TO, ARC_TESTNET, arcTxUrl } from '@/lib/arc'
+import type { ReasoningTrace, TraceStatus, ReasoningStep, TracePaymentReceipt, TracePublicationReceipt } from '@/backend/shared/types/trace'
 import type { PaymentChallenge, PremiumTracePreview } from '@/backend/shared/types/api'
+
+const TRACE_UNLOCK_CHALLENGE_TIMEOUT_MS = 30000
+const TRACE_SETTLE_TIMEOUT_MS = 45000
+const BALANCE_REFRESH_TIMEOUT_MS = 6000
+const TRACE_PUBLISH_TIMEOUT_MS = 16000
+
+type UnlockState =
+  | 'idle'
+  | 'awaiting_wallet_approval'
+  | 'signing_payment_authorization'
+  | 'settling_payment'
+  | 'confirming_payment'
+  | 'payment_confirmed'
+  | 'trace_unlocked'
+  | 'unlock_failed'
+
+type PublishState =
+  | 'idle'
+  | 'awaiting_signature'
+  | 'publishing'
+  | 'published'
+  | 'failed'
 
 function StatusBadge({ status }: { status: TraceStatus }) {
   const map: Record<TraceStatus, { cls: string; label: string }> = {
@@ -124,71 +148,281 @@ export default function TraceDetailPage() {
   const [trace, setTrace] = useState<ReasoningTrace | null>(null)
   const [paymentRequired, setPaymentRequired] = useState<PaymentChallenge | null>(null)
   const [tracePreview, setTracePreview] = useState<PremiumTracePreview | null>(null)
-  const [paymentHeader, setPaymentHeader] = useState('')
-  const [showPaymentDetails, setShowPaymentDetails] = useState(false)
   const [paymentReceipt, setPaymentReceipt] = useState<TracePaymentReceipt | undefined>(undefined)
-  const [unlocking, setUnlocking] = useState(false)
+  const [publicationReceipt, setPublicationReceipt] = useState<TracePublicationReceipt | undefined>(undefined)
+  const [unlockState, setUnlockState] = useState<UnlockState>('idle')
+  const [publishState, setPublishState] = useState<PublishState>('idle')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [actionStatus, setActionStatus] = useState<string | null>(null)
+  const unlockInFlightRef = useRef(false)
+  const loadRequestRef = useRef(0)
+  const unlockResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const accessLoadKeyRef = useRef<string | null>(null)
+  const unlocking = isUnlockInFlight(unlockState)
+  const actionStatus = unlockStatusMessage(unlockState)
+  const publishing = publishState === 'awaiting_signature' || publishState === 'publishing'
 
   useEffect(() => {
     if (!traceId) return
-    setLoading(true); setError(null)
+    if (unlockInFlightRef.current) return
+    let cancelled = false
+    const accessWalletAddress = wallet.activeAddress ?? wallet.address ?? undefined
     const storedAccess = loadTraceAccess(traceId)
-    getPremiumTrace(traceId, undefined, storedAccess?.receiptId, wallet.address ?? undefined)
+    const storedAccessWallet = storedAccess?.payer ?? accessWalletAddress
+    const accessLoadKey = `${traceId}:${storedAccess?.receiptId ?? ''}:${storedAccessWallet ?? ''}`
+    if (accessLoadKeyRef.current === accessLoadKey) return
+    accessLoadKeyRef.current = accessLoadKey
+    const requestId = loadRequestRef.current + 1
+    loadRequestRef.current = requestId
+    setLoading(true); setError(null)
+    if (!unlockInFlightRef.current) {
+      clearUnlockResetTimer()
+      setActionError(null)
+      setUnlockState('idle')
+    }
+    getPremiumTrace(traceId, storedAccess?.receiptId, storedAccessWallet)
       .then(result => {
+        if (cancelled || requestId !== loadRequestRef.current || unlockInFlightRef.current) return
         if (result.status === 'payment_required') {
+          if (storedAccess?.receiptId) clearTraceAccess(traceId)
           setPaymentRequired(result.paymentRequired)
           setTracePreview(result.tracePreview ?? null)
+          setPaymentReceipt(undefined)
+          setPublicationReceipt(undefined)
           setTrace(null)
           return
         }
         setTrace(result.trace)
         setPaymentReceipt(result.receipt)
+        setPublicationReceipt(result.trace.publicationReceipts?.[0])
         if (result.receipt) saveTraceAccess(traceId, result.receipt)
         setPaymentRequired(null)
         setTracePreview(null)
       })
-      .catch(e => setError(e instanceof ApiError ? e.message : 'Trace not found.'))
-      .finally(() => setLoading(false))
-  }, [traceId, wallet.address])
+      .catch(e => {
+        if (!cancelled && requestId === loadRequestRef.current && !unlockInFlightRef.current) {
+          setError(e instanceof ApiError && e.code === 'TRACE_NOT_FOUND'
+            ? 'Trace is still being indexed. Reopen it in a moment.'
+            : premiumTraceLoadErrorMessage(e))
+        }
+      })
+      .finally(() => {
+        if (!cancelled && requestId === loadRequestRef.current && !unlockInFlightRef.current) setLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [traceId, wallet.activeAddress, wallet.address])
+
+  useEffect(() => {
+    return () => clearUnlockResetTimer()
+  }, [])
+
+  function clearUnlockResetTimer() {
+    if (!unlockResetTimerRef.current) return
+    clearTimeout(unlockResetTimerRef.current)
+    unlockResetTimerRef.current = null
+  }
+
+  function scheduleUnlockStateReset() {
+    clearUnlockResetTimer()
+    unlockResetTimerRef.current = setTimeout(() => {
+      setUnlockState('idle')
+      unlockResetTimerRef.current = null
+    }, 2400)
+  }
+
+  function schedulePublishStateReset() {
+    window.setTimeout(() => setPublishState('idle'), 2400)
+  }
 
   async function unlockTrace() {
+    if (unlockInFlightRef.current) return
+
     if (!wallet.isConnected) {
-      setActionError('Connect a wallet before unlocking paid intelligence.')
+      setActionError('Connect an EVM wallet before unlocking paid intelligence.')
+      setUnlockState('unlock_failed')
       return
     }
 
-    if (!traceId || !paymentHeader.trim()) {
-      setShowPaymentDetails(true)
-      setActionError('This environment needs a signed x402 payment authorization before access can be settled.')
-      return
-    }
+    if (!traceId || !paymentRequired) return
 
-    setUnlocking(true)
+    unlockInFlightRef.current = true
+    loadRequestRef.current += 1
+    clearUnlockResetTimer()
     setActionError(null)
-    setActionStatus('Verifying USDC payment...')
+    setUnlockState('awaiting_wallet_approval')
     try {
-      const result = await getPremiumTrace(traceId, paymentHeader.trim(), undefined, wallet.address ?? undefined)
+      const paymentAccessWallet = wallet.activeWalletType === 'injected'
+        ? wallet.activeAddress ?? wallet.address ?? undefined
+        : wallet.walletType === 'injected'
+          ? wallet.address ?? undefined
+          : undefined
+      const challengeResult = await withTimeout(
+        getPremiumTrace(traceId, undefined, paymentAccessWallet),
+        TRACE_UNLOCK_CHALLENGE_TIMEOUT_MS,
+        'Trace unlock challenge timed out.',
+      )
+      if (challengeResult.status === 'granted') {
+        setTrace({ ...challengeResult.trace, locked: false })
+        setPaymentReceipt(challengeResult.receipt)
+        setPublicationReceipt(challengeResult.trace.publicationReceipts?.[0])
+        if (challengeResult.receipt) saveTraceAccess(traceId, challengeResult.receipt)
+        setPaymentRequired(null)
+        setTracePreview(null)
+        setUnlockState('trace_unlocked')
+        scheduleUnlockStateReset()
+        return
+      }
+
+      const activeChallenge = challengeResult.paymentRequired
+      setPaymentRequired(activeChallenge)
+      setTracePreview(challengeResult.tracePreview ?? tracePreview)
+      setUnlockState('signing_payment_authorization')
+
+      const paymentConnectorId = activeEvmConnectorId(wallet)
+      const expectedPaymentAddress = wallet.activeWalletType === 'injected'
+        ? wallet.activeAddress ?? wallet.address ?? undefined
+        : undefined
+      if (!paymentConnectorId) {
+        throw new Error('Connect an EVM wallet before unlocking paid intelligence.')
+      }
+      const paymentWalletAddress = await getAddress(paymentConnectorId).catch(() => null)
+      setUnlockState('settling_payment')
+      const paymentTxHash = await sendX402PaymentTransaction(
+        activeChallenge,
+        expectedPaymentAddress,
+        (progressState) => setUnlockState(progressState),
+        paymentConnectorId,
+      )
+      const submittedPaymentWalletAddress = await getAddress(paymentConnectorId).catch(() => null)
+      const verifiedWalletAddress = submittedPaymentWalletAddress ?? paymentWalletAddress ?? expectedPaymentAddress
+      setPaymentReceipt({
+        receiptId: paymentTxHash,
+        protocol: 'x402',
+        amount: activeChallenge.amount,
+        asset: 'USDC',
+        network: activeChallenge.network,
+        payer: verifiedWalletAddress,
+        payTo: activeChallenge.payTo,
+        txHash: paymentTxHash,
+        settlementStatus: 'submitted',
+        unlockedAt: new Date().toISOString(),
+      })
+      const result = await withTimeout(
+        getPremiumTrace(traceId, paymentTxHash, verifiedWalletAddress),
+        TRACE_SETTLE_TIMEOUT_MS,
+        'Trace settlement timed out.',
+      )
       if (result.status === 'payment_required') {
         setPaymentRequired(result.paymentRequired)
         setTracePreview(result.tracePreview ?? tracePreview)
-        setActionError('Payment was not accepted by the x402 facilitator.')
+        setActionError('Payment was not accepted. Confirm wallet approval and try again.')
+        setUnlockState('unlock_failed')
         return
       }
-      setTrace(result.trace)
-      setPaymentReceipt(result.receipt)
-      if (result.receipt) saveTraceAccess(traceId, result.receipt)
+
+      if (!result.receipt) {
+        throw new Error('Payment confirmation was not returned.')
+      }
+
+      setUnlockState('payment_confirmed')
+
+      const unlockedTrace = result.trace
+      const unlockedReceipt = { ...result.receipt, txHash: paymentTxHash }
+      saveTraceAccess(traceId, unlockedReceipt)
+
+      setTrace({ ...unlockedTrace, locked: false })
+      setPaymentReceipt(unlockedReceipt)
+      setPublicationReceipt(unlockedTrace.publicationReceipts?.[0] ?? publicationReceipt)
       setPaymentRequired(null)
       setTracePreview(null)
-      setActionStatus('Trace unlocked')
-      window.setTimeout(() => setActionStatus(null), 1800)
+      setError(null)
+      setLoading(false)
+      setUnlockState('trace_unlocked')
+      scheduleUnlockStateReset()
+      void withTimeout(wallet.refreshBalance(), BALANCE_REFRESH_TIMEOUT_MS, 'Balance refresh timed out.').catch(() => undefined)
     } catch (e) {
-      setActionError(e instanceof ApiError ? `${e.code}: ${e.message}` : 'Payment verification failed.')
+      console.error('[vestige:x402:unlock-failed]', e)
+      setActionError(paymentErrorMessage(e))
+      setUnlockState('unlock_failed')
+      scheduleUnlockStateReset()
     } finally {
-      setUnlocking(false)
+      unlockInFlightRef.current = false
+    }
+  }
+
+  async function publishCurrentTrace() {
+    if (publishing) return
+    if (!trace || trace.locked) {
+      setActionError('Unlock trace to publish it.')
+      setPublishState('failed')
+      return
+    }
+    if (!wallet.isConnected) {
+      setActionError('Connect an EVM wallet before publishing.')
+      setPublishState('failed')
+      return
+    }
+
+    const activeConnectorId = activeEvmConnectorId(wallet)
+    if (!activeConnectorId) {
+      setActionError('Connect an EVM wallet before publishing.')
+      setPublishState('failed')
+      return
+    }
+    const activeAddress = await getAddress(activeConnectorId).catch(() => wallet.activeAddress ?? wallet.address)
+    if (!activeAddress) {
+      setActionError('Connect an EVM wallet before publishing.')
+      setPublishState('failed')
+      return
+    }
+
+    setActionError(null)
+    setPublishState('awaiting_signature')
+    try {
+      const contentDigest = await digestTrace(trace)
+      const message = [
+        'Vestige trace publication authorization',
+        `traceId=${trace.id}`,
+        `contentDigest=${contentDigest}`,
+        `publisher=${activeAddress}`,
+        `network=eip155:${ARC_TESTNET.chainId}`,
+        `publishPayTo=${ARC_PUBLISH_PAY_TO}`,
+        `publishAmount=${ARC_PUBLISH_FEE_USDC} USDC`,
+      ].join('\n')
+      const signature = await signMessage(message, activeAddress, activeConnectorId)
+      setPublishState('publishing')
+      const publicationTxHash = await sendArcUsdcTransfer({
+        to: ARC_PUBLISH_PAY_TO,
+        amount: ARC_PUBLISH_FEE_USDC,
+        expectedWalletAddress: activeAddress,
+        connectorId: activeConnectorId,
+      })
+      const result = await withTimeout(
+        publishTrace(trace.id, {
+          publisher: activeAddress,
+          signature,
+          message,
+          contentDigest,
+          publicationTxHash,
+          unlockReceiptId: paymentReceipt?.receiptId ?? receipts[0]?.receiptId,
+        }),
+        TRACE_PUBLISH_TIMEOUT_MS,
+        'Trace publication timed out.',
+      )
+      setTrace({ ...result.trace, locked: false })
+      setPublicationReceipt(result.receipt)
+      setPublishState('published')
+      schedulePublishStateReset()
+      void withTimeout(wallet.refreshBalance(), BALANCE_REFRESH_TIMEOUT_MS, 'Balance refresh timed out.').catch(() => undefined)
+    } catch (e) {
+      console.error('[vestige:publish:failed]', e)
+      setActionError(publishErrorMessage(e))
+      setPublishState('failed')
+      schedulePublishStateReset()
     }
   }
 
@@ -196,8 +430,7 @@ export default function TraceDetailPage() {
     setActionError(null)
     try {
       await navigator.clipboard.writeText(text)
-      setActionStatus(`${label} copied`)
-      window.setTimeout(() => setActionStatus(null), 1600)
+      setActionError(null)
     } catch {
       setActionError('Clipboard copy failed.')
     }
@@ -213,8 +446,7 @@ export default function TraceDetailPage() {
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
-    setActionStatus('Report downloaded')
-    window.setTimeout(() => setActionStatus(null), 1600)
+    setActionError(null)
   }
 
   if (loading) return <Skeleton />
@@ -236,7 +468,7 @@ export default function TraceDetailPage() {
       <div className="card" style={{ padding: '28px 30px', borderColor: 'var(--lime-border)', background: 'rgba(10,10,20,0.92)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <AccessBadge label={(tracePreview?.accessTier ?? 'premium').toUpperCase()} />
-          <span className="audit-badge">x402 gated trace</span>
+          <span className="audit-badge">USDC gated trace</span>
           {tracePreview?.unlockCount !== undefined && (
             <span className="mono-label" style={{ marginBottom: 0, color: 'var(--text-tertiary)' }}>
               {tracePreview.unlockCount} paid unlock{tracePreview.unlockCount === 1 ? '' : 's'}
@@ -257,8 +489,8 @@ export default function TraceDetailPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 1, background: 'var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 22 }}>
           {[
             { k: 'Price', v: `${paymentRequired.amount} ${paymentRequired.asset}` },
-            { k: 'Network', v: paymentRequired.network },
-            { k: 'Status', v: unlocking ? 'verifying' : 'payment required' },
+            { k: 'Settlement', v: paymentRailLabel(paymentRequired) },
+            { k: 'Status', v: paywallStatusLabel(unlockState) },
             { k: 'Created', v: tracePreview?.createdAt ? formatDate(tracePreview.createdAt) : 'No data yet' },
             { k: 'Unlocks', v: String(tracePreview?.unlockCount ?? 0) },
             { k: 'USDC generated', v: tracePreview?.totalUsdcGenerated ?? '0.00' },
@@ -341,49 +573,27 @@ export default function TraceDetailPage() {
             background: 'rgba(255,255,255,0.025)',
             padding: '14px 16px',
           }}>
-            <div className="mono-label" style={{ marginBottom: 8 }}>Payment rail</div>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, fontWeight: 300, marginBottom: 12 }}>
-              Vestige issued an x402 USDC challenge for this trace. Submit a signed payment authorization from the connected wallet to settle access and attach a receipt to the audit trail.
+            <div className="mono-label" style={{ marginBottom: 8 }}>USDC wallet checkout</div>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, fontWeight: 300, marginBottom: 0 }}>
+              Approve the USDC unlock in your connected wallet. Vestige settles the receipt in the background and opens reasoning, agent outputs, and exports after confirmation.
             </p>
-            <button
-              onClick={() => setShowPaymentDetails(value => !value)}
-              className="btn-ghost"
-              style={{ justifyContent: 'center' }}
-            >
-              {showPaymentDetails ? 'Hide payment authorization' : 'Show payment authorization'}
-            </button>
           </div>
-
-          {showPaymentDetails && (
-            <div>
-              <label className="mono-label" style={{ marginBottom: 6, display: 'block' }}>Signed x402 payment authorization</label>
-              <textarea
-                value={paymentHeader}
-                onChange={event => setPaymentHeader(event.target.value)}
-                disabled={unlocking}
-                rows={4}
-                placeholder="Paste signed x-payment header"
-                style={{
-                  width: '100%', background: 'rgba(5,5,7,0.8)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                  padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: 11,
-                  color: 'var(--text-primary)', outline: 'none', resize: 'vertical', lineHeight: 1.7,
-                }}
-              />
-            </div>
-          )}
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button
               onClick={unlockTrace}
               disabled={unlocking}
               className="btn-primary"
-              style={{ opacity: unlocking ? 0.7 : 1, cursor: unlocking ? 'not-allowed' : 'pointer' }}
+              style={{
+                opacity: unlocking ? 0.7 : 1,
+                cursor: unlocking ? 'not-allowed' : 'pointer',
+              }}
             >
-              {unlocking ? 'Verifying payment...' : `Unlock Trace - ${paymentRequired.amount} ${paymentRequired.asset}`}
-            </button>
-            <button onClick={() => copyText(JSON.stringify(paymentRequired, null, 2), 'Payment challenge')} className="btn-ghost">
-              Copy challenge
+              {unlocking
+                ? actionStatus
+                : wallet.isConnected
+                  ? `Unlock Trace - ${paymentRequired.amount} ${paymentRequired.asset}`
+                  : 'Connect EVM Wallet to Unlock'}
             </button>
           </div>
 
@@ -403,9 +613,6 @@ export default function TraceDetailPage() {
             }}>{actionStatus}</div>
           )}
 
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', lineHeight: 1.7, wordBreak: 'break-all' }}>
-            Pay to {paymentRequired.payTo} / resource {paymentRequired.resource}
-          </div>
         </div>
       </div>
     </main>
@@ -427,6 +634,8 @@ export default function TraceDetailPage() {
   const auditMetrics = deriveAuditMetrics(trace)
   const receipts = uniqueReceipts([...(trace.paymentReceipts ?? []), ...(paymentReceipt ? [paymentReceipt] : [])])
   const unlockCount = Math.max(traceUnlockCount(trace), receipts.length)
+  const publications = uniquePublicationReceipts([...(trace.publicationReceipts ?? []), ...(publicationReceipt ? [publicationReceipt] : [])])
+  const publishStatus = publishStatusMessage(publishState)
 
   function gatedAction(action: () => void) {
     if (!trace || trace.locked) {
@@ -644,7 +853,7 @@ export default function TraceDetailPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {[
                 { k: 'Positioning', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: sideColor(trace.positionIntent.side), textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sideLabel(trace.positionIntent.side)}</span> },
-                { k: 'State', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{trace.verdict?.action ?? 'RANGE CONDITIONS'}</span> },
+                { k: 'State', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{trace.verdict?.action ?? 'Regime Shift Watch'}</span> },
                 { k: 'Regime', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.marketRegime}</span> },
                 { k: 'Liquidity', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.liquidityState}</span> },
                 { k: 'Volatility', v: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{auditMetrics.volatilityState}</span> },
@@ -716,6 +925,15 @@ export default function TraceDetailPage() {
                 }}>{actionStatus}</div>
               )}
 
+              {publishStatus && (
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, color: publishState === 'failed' ? 'var(--ember)' : 'var(--violet)',
+                  background: publishState === 'failed' ? 'var(--ember-dim)' : 'var(--violet-dim)',
+                  border: `1px solid ${publishState === 'failed' ? 'rgba(255,107,53,0.22)' : 'var(--violet-border)'}`,
+                  borderRadius: 'var(--radius)', padding: '10px 12px', lineHeight: 1.6,
+                }}>{publishStatus}</div>
+              )}
+
               <button onClick={() => gatedAction(() => copyText(summary, 'Summary'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-ghost" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Copy summary
               </button>
@@ -730,6 +948,15 @@ export default function TraceDetailPage() {
               </button>
               <button onClick={() => gatedAction(() => download(`${trace.assetSymbol}-${trace.id}.md`, markdown, 'text/markdown'))} disabled={trace.locked} title={trace.locked ? 'Unlock trace to export intelligence' : undefined} className="btn-primary" style={{ justifyContent: 'center', opacity: trace.locked ? 0.45 : 1 }}>
                 Download report
+              </button>
+              <button
+                onClick={() => gatedAction(() => void publishCurrentTrace())}
+                disabled={trace.locked || publishing}
+                title={trace.locked ? 'Unlock trace to publish intelligence' : undefined}
+                className="btn-ghost"
+                style={{ justifyContent: 'center', opacity: trace.locked || publishing ? 0.45 : 1 }}
+              >
+                {publishing ? publishStatus ?? 'Publishing...' : wallet.isConnected ? 'Publish to Arc' : 'Connect wallet to publish'}
               </button>
             </div>
           </div>
@@ -791,10 +1018,48 @@ export default function TraceDetailPage() {
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{receipt.network}</div>
                     <span className="mono-label" style={{ marginBottom: 0 }}>Unlocked</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{formatDate(receipt.unlockedAt)}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Settlement</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: receipt.settlementStatus === 'confirmed' ? 'var(--lime)' : 'var(--violet)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {receipt.settlementStatus ?? 'confirmed'}
+                    </div>
                     {receipt.txHash && (
                       <>
                         <span className="mono-label" style={{ marginBottom: 0 }}>Tx hash</span>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{receipt.txHash}</div>
+                        <div>
+                          <a href={arcTxUrl(receipt.txHash)} target="_blank" rel="noopener noreferrer" title={receipt.txHash} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{truncateHash(receipt.txHash, 12)}</a>
+                          <a href={arcTxUrl(receipt.txHash)} target="_blank" rel="noopener noreferrer" className="btn-ghost" style={{ marginTop: 8, justifyContent: 'center', fontSize: 10, padding: '6px 10px' }}>View Transaction</a>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!trace.locked && publications.length > 0 && (
+            <div className="card" style={{ padding: '18px 20px' }}>
+              <div className="mono-label" style={{ marginBottom: 14 }}>Arc publication</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {publications.map(receipt => (
+                  <div key={receipt.publicationId} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 10 }}>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Publication</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.7, wordBreak: 'break-all' }}>
+                      {receipt.publicationId}
+                    </div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Publisher</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{receipt.publisher}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Storage</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)', textTransform: 'uppercase' }}>{receipt.storage}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Published</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{formatDate(receipt.publishedAt)}</div>
+                    {receipt.txHash && (
+                      <>
+                        <span className="mono-label" style={{ marginBottom: 0 }}>Tx hash</span>
+                        <div>
+                          <a href={arcTxUrl(receipt.txHash)} target="_blank" rel="noopener noreferrer" title={receipt.txHash} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{truncateHash(receipt.txHash, 12)}</a>
+                          <a href={arcTxUrl(receipt.txHash)} target="_blank" rel="noopener noreferrer" className="btn-ghost" style={{ marginTop: 8, justifyContent: 'center', fontSize: 10, padding: '6px 10px' }}>View Transaction</a>
+                        </div>
                       </>
                     )}
                   </div>
@@ -820,6 +1085,129 @@ export default function TraceDetailPage() {
       `}</style>
     </main>
   )
+}
+
+function paymentErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes('timed out') || normalized.includes('timeout')) {
+    return 'Payment confirmation timed out. Try again.'
+  }
+  if (normalized.includes('user canceled') || normalized.includes('cancel')) {
+    return 'Wallet approval was cancelled.'
+  }
+  if (normalized.includes('not enough') || normalized.includes('balance')) {
+    return 'Wallet does not have enough USDC to unlock this trace.'
+  }
+  if (normalized.includes('facilitator') || normalized.includes('settlement') || normalized.includes('verification')) {
+    return 'Payment settlement failed. Try again after confirming wallet funding and network availability.'
+  }
+  if (normalized.includes('authorization') || normalized.includes('signed wallet approval')) {
+    return 'Wallet approval could not be completed. Try again.'
+  }
+  if (normalized.includes('undeployed wallet')) return 'Switch to a self-custody EVM wallet and try again.'
+  if (normalized.includes('circle') || normalized.includes('wallet')) {
+    return message
+  }
+
+  return 'Unlock failed. Try again after confirming the wallet approval.'
+}
+
+function publishErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  const normalized = message.toLowerCase()
+  if (normalized.includes('timed out') || normalized.includes('timeout')) return 'Trace publication timed out. Try again.'
+  if (normalized.includes('cancel') || normalized.includes('rejected') || normalized.includes('denied')) return 'Wallet publication signature was cancelled.'
+  if (normalized.includes('unlock')) return 'Unlock trace before publishing it.'
+  if (normalized.includes('wallet') || normalized.includes('sign')) return message || 'Wallet signature could not be completed.'
+  return 'Trace publication failed. Try again.'
+}
+
+function activeEvmConnectorId(wallet: ReturnType<typeof useWallet>) {
+  if (wallet.activeWalletType === 'injected') return wallet.activeConnectorId ?? wallet.connectorId ?? 'browser'
+  if (wallet.walletType === 'injected') return wallet.connectorId ?? 'browser'
+  if (wallet.activeProvider) return wallet.activeConnectorId ?? 'browser'
+  return 'browser'
+}
+
+function premiumTraceErrorMessage(error: ApiError): string {
+  if (error.code === 'X402_NOT_CONFIGURED') {
+    return 'Paid access is temporarily unavailable. Please try again later.'
+  }
+  if (error.code.startsWith('PAYMENT_') || error.code === 'ARC_RPC_FAILED' || error.code === 'ARC_CHAIN_MISMATCH') {
+    return 'Paid access could not be confirmed. Please try the unlock again.'
+  }
+  if (error.code === 'TRACE_UPDATE_FAILED') {
+    return 'Payment was confirmed but the trace record could not be refreshed. Try again in a moment.'
+  }
+  if (error.code.startsWith('X402_')) {
+    return 'Paid access is temporarily unavailable. Please try again later.'
+  }
+  return error.message
+}
+
+function premiumTraceLoadErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) return premiumTraceErrorMessage(error)
+  return error instanceof Error ? error.message : 'Trace not found.'
+}
+
+function isUnlockInFlight(state: UnlockState): boolean {
+  return state === 'awaiting_wallet_approval' ||
+    state === 'signing_payment_authorization' ||
+    state === 'settling_payment' ||
+    state === 'confirming_payment' ||
+    state === 'payment_confirmed'
+}
+
+function unlockStatusMessage(state: UnlockState): string | null {
+  if (state === 'awaiting_wallet_approval') return 'Awaiting wallet approval...'
+  if (state === 'signing_payment_authorization') return 'Preparing Arc USDC payment...'
+  if (state === 'settling_payment') return 'Settling USDC payment...'
+  if (state === 'confirming_payment') return 'Confirming Arc transaction...'
+  if (state === 'payment_confirmed') return 'Payment confirmed. Refreshing access...'
+  if (state === 'trace_unlocked') return 'Trace unlocked.'
+  if (state === 'unlock_failed') return 'Unlock failed.'
+  return null
+}
+
+function publishStatusMessage(state: PublishState): string | null {
+  if (state === 'awaiting_signature') return 'Awaiting publish signature...'
+  if (state === 'publishing') return 'Publishing trace to Arc...'
+  if (state === 'published') return 'Trace published.'
+  if (state === 'failed') return 'Publication failed.'
+  return null
+}
+
+function paywallStatusLabel(state: UnlockState): string {
+  if (state === 'awaiting_wallet_approval') return 'awaiting wallet approval'
+  if (state === 'signing_payment_authorization') return 'signing authorization'
+  if (state === 'settling_payment') return 'settling USDC'
+  if (state === 'confirming_payment') return 'confirming transaction'
+  if (state === 'payment_confirmed') return 'payment confirmed'
+  if (state === 'trace_unlocked') return 'trace unlocked'
+  if (state === 'unlock_failed') return 'unlock failed'
+  return 'payment required'
+}
+
+function paymentRailLabel(challenge: PaymentChallenge): string {
+  const normalized = challenge.network.trim().toLowerCase()
+  if (normalized === 'arc' || normalized === 'arc-testnet' || normalized === 'eip155:5042002') {
+    return 'Arc USDC on Arc'
+  }
+  if (normalized.startsWith('eip155:')) {
+    return `Arc USDC on chain ${normalized.slice('eip155:'.length)}`
+  }
+  return 'USDC on Arc'
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(timeoutMessage)), ms)
+    promise
+      .then(resolve, reject)
+      .finally(() => window.clearTimeout(timeout))
+  })
 }
 
 function traceToSummary(trace: ReasoningTrace): string {
@@ -873,10 +1261,39 @@ function traceToMarkdown(trace: ReasoningTrace, steps: ReasoningStep[]): string 
   return lines.join('\n')
 }
 
+async function digestTrace(trace: ReasoningTrace): Promise<string> {
+  const payload = JSON.stringify({
+    id: trace.id,
+    market: trace.market,
+    assetSymbol: trace.assetSymbol,
+    thesis: trace.thesis,
+    reasoningSteps: trace.reasoningSteps,
+    risks: trace.risks,
+    catalysts: trace.catalysts,
+    confidence: trace.confidence,
+    positionIntent: trace.positionIntent,
+    verdict: trace.verdict,
+    createdAt: trace.createdAt,
+  })
+  const bytes = new TextEncoder().encode(payload)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 function uniqueReceipts(receipts: TracePaymentReceipt[]): TracePaymentReceipt[] {
   const seen = new Set<string>()
   return receipts.filter(receipt => {
     const key = receipt.receiptId || receipt.txHash || receipt.unlockedAt
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function uniquePublicationReceipts(receipts: TracePublicationReceipt[]): TracePublicationReceipt[] {
+  const seen = new Set<string>()
+  return receipts.filter(receipt => {
+    const key = receipt.publicationId || receipt.contentDigest || receipt.publishedAt
     if (seen.has(key)) return false
     seen.add(key)
     return true

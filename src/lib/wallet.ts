@@ -1,21 +1,19 @@
 /**
  * Vestige wallet integration.
  *
- * Strategy: Circle user-controlled wallets as primary.
- * Injected wallet (MetaMask etc.) as secondary self-custody path.
+ * Strategy: injected EVM wallets as the payment and signing default.
  *
- * Circle social login gives the user a persistent Arc wallet identity
- * without routing through the disabled legacy provisioning endpoint.
- *
- * The injected wallet path is kept for users who prefer self-custody.
+ * Circle social login remains available as an optional wallet identity,
+ * but premium payments and publishing use the active wallet abstraction.
  */
 
-import { ARC_TESTNET, ARC_CHAIN_PARAMS, truncateAddress } from './arc'
+import { ARC_TESTNET, ARC_CHAIN_PARAMS, ARC_USDC_CONTRACT_ADDRESS, truncateAddress } from './arc'
+import type { PaymentChallenge } from '@/backend/shared/types/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type WalletType = 'circle' | 'injected' | null
-export type SelfCustodyConnectorId = 'metamask' | 'rabby' | 'coinbase' | 'walletconnect'
+export type SelfCustodyConnectorId = 'metamask' | 'rabby' | 'coinbase' | 'browser' | 'walletconnect'
 
 export interface SelfCustodyConnector {
   id: SelfCustodyConnectorId
@@ -24,18 +22,84 @@ export interface SelfCustodyConnector {
   available: boolean
 }
 
-interface Eip1193Provider {
+export interface Eip1193Provider {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>
-  on?: (event: string, cb: (...args: never[]) => void) => void
-  removeListener?: (event: string, cb: (...args: never[]) => void) => void
+  on?: (event: string, cb: (...args: unknown[]) => void) => void
+  removeListener?: (event: string, cb: (...args: unknown[]) => void) => void
   isMetaMask?: boolean
   isRabby?: boolean
   isCoinbaseWallet?: boolean
+  providers?: Eip1193Provider[]
+  selectedProvider?: Eip1193Provider
+  providerMap?: Map<string, Eip1193Provider> | Record<string, Eip1193Provider>
+  _events?: unknown
+  name?: string
+  rdns?: string
+}
+
+interface Eip6963ProviderInfo {
+  uuid: string
+  name: string
+  icon?: string
+  rdns?: string
+}
+
+interface Eip6963ProviderDetail {
+  info: Eip6963ProviderInfo
+  provider: Eip1193Provider
+}
+
+type WalletProgressStage = 'signing_payment_authorization' | 'awaiting_wallet_approval' | 'confirming_payment'
+
+export interface TransactionRequest {
+  from?: string
+  to?: string
+  value?: string
+  data?: string
+  gas?: string
+  gasPrice?: string
+  maxFeePerGas?: string
+  maxPriorityFeePerGas?: string
+}
+
+export interface TransactionConfirmation {
+  transactionHash: string
+  status?: string
+  blockNumber?: string
+  from?: string
+  to?: string
+}
+
+export interface ChainRequestParameters {
+  chainId: string
+  chainName: string
+  nativeCurrency: {
+    name: string
+    symbol: string
+    decimals: number
+  }
+  rpcUrls: readonly string[]
+  blockExplorerUrls?: readonly string[]
+}
+
+export interface UnifiedWallet {
+  connectWallet: () => Promise<string[]>
+  getAddress: () => Promise<string | null>
+  signMessage: (message: string, address?: string | null) => Promise<string>
+  signTypedData: (typedData: unknown, address?: string | null) => Promise<string>
+  sendTransaction: (transaction: TransactionRequest) => Promise<string>
+  getProvider: () => Eip1193Provider | null
 }
 
 export interface WalletState {
   address: string | null
   walletType: WalletType
+  connectorId: SelfCustodyConnectorId | null
+  activeAddress?: string | null
+  activeWalletType?: WalletType
+  activeConnectorId?: SelfCustodyConnectorId | null
+  activeProvider?: Eip1193Provider | null
+  activeChainId?: number | null
   chainId: number | null
   isConnected: boolean
   isConnecting: boolean
@@ -155,7 +219,6 @@ export interface WalletActions {
   disconnect: () => void
   switchToArc: () => Promise<void>
   refreshBalance: () => Promise<void>
-  applyLocalBalanceCredit: (amount: string) => void
 }
 
 class CircleWalletOperationError extends Error {
@@ -237,6 +300,95 @@ export async function completePendingCircleLogin(): Promise<{ address: string; w
 export function hasPendingCircleLoginRecovery(): boolean {
   if (typeof window === 'undefined') return false
   return Boolean(window.location.hash) && hasPendingCircleLogin()
+}
+
+export async function sendX402PaymentTransaction(
+  challenge: PaymentChallenge,
+  expectedWalletAddress?: string,
+  onProgress?: (stage: WalletProgressStage) => void,
+  connectorId?: SelfCustodyConnectorId | null,
+): Promise<string> {
+  if (typeof window === 'undefined') {
+    throw new Error('Payment can only be submitted in the browser.')
+  }
+  if (!isEvmAddress(challenge.payTo) || !isEvmAddress(challenge.assetAddress)) {
+    throw new Error('Payment challenge is missing an Arc USDC recipient.')
+  }
+
+  const activeConnectorId = connectorId ?? activeConnectorIdFromPersistence()
+  const signerAddress = await resolvePaymentSigner(expectedWalletAddress, activeConnectorId)
+  onProgress?.('awaiting_wallet_approval')
+  await ensureWalletOnArc(activeConnectorId)
+  const data = encodeErc20TransferData(challenge.payTo, challenge.maxAmountRequired ?? usdcToAtomicAmount(challenge.amount))
+  const txHash = await sendTransaction({
+    from: signerAddress,
+    to: challenge.assetAddress ?? ARC_USDC_CONTRACT_ADDRESS,
+    data,
+    value: '0x0',
+  }, activeConnectorId)
+  onProgress?.('confirming_payment')
+  await waitForTransactionConfirmation(txHash, activeConnectorId, { chainId: ARC_TESTNET.chainId })
+  return txHash
+}
+
+export async function sendArcUsdcTransfer(input: {
+  to: string
+  amount: string
+  expectedWalletAddress?: string
+  connectorId?: SelfCustodyConnectorId | null
+  onProgress?: (stage: WalletProgressStage) => void
+}): Promise<string> {
+  if (typeof window === 'undefined') {
+    throw new Error('Payment can only be submitted in the browser.')
+  }
+  if (!isEvmAddress(input.to)) {
+    throw new Error('USDC transfer recipient is invalid.')
+  }
+
+  const activeConnectorId = input.connectorId ?? activeConnectorIdFromPersistence()
+  const signerAddress = await resolvePaymentSigner(input.expectedWalletAddress, activeConnectorId)
+  input.onProgress?.('awaiting_wallet_approval')
+  await ensureWalletOnArc(activeConnectorId)
+  const txHash = await sendTransaction({
+    from: signerAddress,
+    to: ARC_USDC_CONTRACT_ADDRESS,
+    data: encodeErc20TransferData(input.to, usdcToAtomicAmount(input.amount)),
+    value: '0x0',
+  }, activeConnectorId)
+  input.onProgress?.('confirming_payment')
+  await waitForTransactionConfirmation(txHash, activeConnectorId, { chainId: ARC_TESTNET.chainId })
+  return txHash
+}
+
+async function resolvePaymentSigner(
+  expectedWalletAddress: string | undefined,
+  connectorId: SelfCustodyConnectorId | null,
+): Promise<string> {
+  const provider = getProvider(connectorId)
+  const fallbackProvider = provider ?? getProvider('browser')
+  if (!fallbackProvider) {
+    throw new Error('Connect an EVM wallet before unlocking paid intelligence.')
+  }
+
+  const accounts = await fallbackProvider.request({ method: 'eth_accounts' }) as string[]
+  const resolvedAccounts = accounts.length > 0 ? accounts : await requestAccounts(connectorId ?? 'browser')
+  const address = resolvedAccounts[0] ?? await getAddress(connectorId)
+  if (!address) {
+    throw new Error(`Connect ${connectorLabel(connectorId)} before unlocking paid intelligence.`)
+  }
+
+  if (expectedWalletAddress && normalizeAddress(expectedWalletAddress) !== normalizeAddress(address)) {
+    throw new Error('Connected wallet does not match the wallet used to unlock the trace.')
+  }
+
+  return address
+}
+
+function activeConnectorIdFromPersistence(): SelfCustodyConnectorId {
+  const persisted = loadPersistedWallet()
+  return persisted?.walletType === 'injected'
+    ? persisted.connectorId ?? 'browser'
+    : 'browser'
 }
 
 /**
@@ -601,71 +753,380 @@ async function circleEndpoint<T>(action: string, body: Record<string, unknown>):
   return response.json() as Promise<T>
 }
 
+function usdcToAtomicAmount(amount: string): string {
+  const normalized = amount.trim()
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return '0'
+  const [whole, fraction = ''] = normalized.split('.')
+  const atomic = `${whole}${fraction.padEnd(6, '0').slice(0, 6)}`.replace(/^0+(?=\d)/, '')
+  return atomic || '0'
+}
+
+function encodeErc20TransferData(to: string, atomicAmount: string): string {
+  if (!isEvmAddress(to)) throw new Error('USDC transfer recipient is invalid.')
+  const amount = BigInt(atomicAmount)
+  if (amount <= 0n) throw new Error('USDC transfer amount is invalid.')
+  return `0xa9059cbb${normalizeAddress(to).slice(2).padStart(64, '0')}${amount.toString(16).padStart(64, '0')}`
+}
+
+function isEvmAddress(value: string | undefined): value is string {
+  return Boolean(value && /^0x[a-fA-F0-9]{40}$/.test(value))
+}
+
+function normalizeAddress(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object')
+}
+
 // ─── Injected wallet (MetaMask / EIP-1193) helpers ───────────────────────────
+
+const eip6963Providers = new Map<string, Eip6963ProviderDetail>()
+const injectedProviderSources = new WeakMap<Eip1193Provider, string>()
+let eip6963Listening = false
+
+function ensureEip6963Discovery(): void {
+  if (typeof window === 'undefined' || eip6963Listening) return
+  eip6963Listening = true
+  window.addEventListener('eip6963:announceProvider', ((event: Event) => {
+    const detail = (event as CustomEvent<Eip6963ProviderDetail>).detail
+    if (!detail?.provider?.request || !detail.info?.uuid) return
+    eip6963Providers.set(detail.info.uuid, detail)
+  }) as EventListener)
+}
+
+export function requestInjectedProviderDiscovery(): void {
+  if (typeof window === 'undefined') return
+  ensureEip6963Discovery()
+  window.dispatchEvent(new Event('eip6963:requestProvider'))
+}
 
 function getInjectedProviders(): Eip1193Provider[] {
   if (typeof window === 'undefined') return []
-  const ethereum = (window as Window & { ethereum?: Eip1193Provider & { providers?: Eip1193Provider[] } }).ethereum
-  if (!ethereum) return []
-  return ethereum.providers?.length ? ethereum.providers : [ethereum]
+  ensureEip6963Discovery()
+  const providers: Eip1193Provider[] = []
+  const addProvider = (provider: Eip1193Provider | undefined, source?: string) => {
+    if (!provider?.request) return
+    const flattened = flattenInjectedProviders(provider)
+    for (const candidate of flattened) {
+      if (source) injectedProviderSources.set(candidate, source)
+      providers.push(candidate)
+    }
+  }
+  for (const detail of eip6963Providers.values()) {
+    providers.push(detail.provider)
+  }
+  const walletWindow = window as Window & {
+    ethereum?: Eip1193Provider
+    rabby?: Eip1193Provider
+    rabbyWallet?: Eip1193Provider
+    coinbaseWalletExtension?: Eip1193Provider
+  }
+  addProvider(walletWindow.ethereum, 'window.ethereum')
+  addProvider(walletWindow.rabby, 'rabby')
+  addProvider(walletWindow.rabbyWallet, 'rabby')
+  addProvider(walletWindow.coinbaseWalletExtension, 'coinbase wallet')
+  return uniqueProviders(providers)
 }
 
-function getProvider(connectorId?: SelfCustodyConnectorId): Eip1193Provider | null {
-  const providers = getInjectedProviders()
-  if (connectorId === 'metamask') return providers.find(provider => provider.isMetaMask && !provider.isRabby) ?? null
-  if (connectorId === 'rabby') return providers.find(provider => provider.isRabby) ?? null
-  if (connectorId === 'coinbase') return providers.find(provider => provider.isCoinbaseWallet) ?? null
+function flattenInjectedProviders(provider: Eip1193Provider): Eip1193Provider[] {
+  const providers: Eip1193Provider[] = []
+  const visit = (candidate?: Eip1193Provider | null) => {
+    if (!candidate?.request || providers.includes(candidate)) return
+    const nested = Array.isArray(candidate.providers) ? candidate.providers : []
+    for (const nestedProvider of nested) visit(nestedProvider)
+    if (candidate.selectedProvider) visit(candidate.selectedProvider)
+    if (candidate.providerMap instanceof Map) {
+      for (const mappedProvider of candidate.providerMap.values()) visit(mappedProvider)
+    } else if (isRecord(candidate.providerMap)) {
+      for (const mappedProvider of Object.values(candidate.providerMap)) {
+        visit(mappedProvider as Eip1193Provider)
+      }
+    }
+    providers.push(candidate)
+  }
+  visit(provider)
+  return providers
+}
+
+function uniqueProviders(providers: Eip1193Provider[]): Eip1193Provider[] {
+  const seen = new Set<Eip1193Provider>()
+  return providers.filter(provider => {
+    if (!provider?.request || seen.has(provider)) return false
+    seen.add(provider)
+    return true
+  })
+}
+
+function inferredProviderInfo(provider: Eip1193Provider, index: number): Eip6963ProviderInfo {
+  const identity = providerIdentityText(provider)
+  if (provider.isRabby || identity.includes('rabby')) {
+    return { uuid: `injected-rabby-${index}`, name: 'Rabby', rdns: 'io.rabby' }
+  }
+  if (provider.isCoinbaseWallet || identity.includes('coinbase')) {
+    return { uuid: `injected-coinbase-${index}`, name: 'Coinbase Wallet', rdns: 'com.coinbase.wallet' }
+  }
+  if (provider.isMetaMask || identity.includes('metamask')) {
+    return { uuid: `injected-metamask-${index}`, name: 'MetaMask', rdns: 'io.metamask' }
+  }
+  return { uuid: `injected-browser-${index}`, name: 'Browser Wallet', rdns: 'injected' }
+}
+
+function getProviderEntry(connectorId?: SelfCustodyConnectorId | null): Eip6963ProviderDetail | null {
   if (connectorId === 'walletconnect') return null
-  return providers[0] ?? null
+
+  const announced = [...eip6963Providers.values()]
+  const entries = getInjectedProviders().map((provider, index) => {
+    const known = announced.find(detail => detail.provider === provider)
+    return known ?? { info: inferredProviderInfo(provider, index), provider }
+  })
+
+  if (connectorId === 'metamask') return entries.find(entry => matchesConnector(entry, 'metamask')) ?? null
+  if (connectorId === 'rabby') return entries.find(entry => matchesConnector(entry, 'rabby')) ?? null
+  if (connectorId === 'coinbase') return entries.find(entry => matchesConnector(entry, 'coinbase')) ?? null
+  if (connectorId === 'browser') return entries[0] ?? null
+
+  const persisted = loadPersistedWallet()
+  if (persisted?.walletType === 'injected' && persisted.connectorId && persisted.connectorId !== 'walletconnect') {
+    const persistedEntry = entries.find(entry => matchesConnector(entry, persisted.connectorId as Exclude<SelfCustodyConnectorId, 'walletconnect'>))
+    if (persistedEntry) return persistedEntry
+  }
+
+  return entries.find(entry => matchesConnector(entry, 'rabby')) ??
+    entries.find(entry => matchesConnector(entry, 'metamask')) ??
+    entries.find(entry => matchesConnector(entry, 'coinbase')) ??
+    entries[0] ??
+    null
+}
+
+function matchesConnector(
+  entry: Eip6963ProviderDetail,
+  connectorId: Exclude<SelfCustodyConnectorId, 'walletconnect'>,
+): boolean {
+  const identity = providerIdentityText(entry.provider, entry.info)
+  if (connectorId === 'rabby') return Boolean(entry.provider.isRabby || identity.includes('rabby'))
+  if (connectorId === 'coinbase') return Boolean(entry.provider.isCoinbaseWallet || identity.includes('coinbase'))
+  if (connectorId === 'metamask') {
+    return Boolean(
+      !entry.provider.isRabby &&
+      !identity.includes('rabby') &&
+      (entry.provider.isMetaMask || identity.includes('metamask')),
+    )
+  }
+  return true
+}
+
+function providerIdentityText(provider: Eip1193Provider, info?: Partial<Eip6963ProviderInfo>): string {
+  const parts: string[] = []
+  const add = (value: unknown) => {
+    if (typeof value === 'string' && value.trim()) parts.push(value.trim())
+  }
+
+  add(info?.name)
+  add(info?.rdns)
+  add(provider.name)
+  add(provider.rdns)
+  add(injectedProviderSources.get(provider))
+  if (provider.isRabby) parts.push('rabby')
+  if (provider.isCoinbaseWallet) parts.push('coinbase wallet')
+  if (provider.isMetaMask) parts.push('metamask')
+
+  const maybeEvents = provider._events
+  if (isRecord(maybeEvents)) {
+    add(maybeEvents.name)
+  }
+
+  return parts.join(' ').toLowerCase()
+}
+
+function connectorLabel(connectorId?: SelfCustodyConnectorId | null): string {
+  if (connectorId === 'metamask') return 'MetaMask'
+  if (connectorId === 'rabby') return 'Rabby'
+  if (connectorId === 'coinbase') return 'Coinbase Wallet'
+  if (connectorId === 'walletconnect') return 'WalletConnect'
+  return 'browser wallet'
+}
+
+export function getProvider(connectorId?: SelfCustodyConnectorId | null): Eip1193Provider | null {
+  return getProviderEntry(connectorId)?.provider ?? null
+}
+
+function getProviderWithFallback(connectorId?: SelfCustodyConnectorId | null): Eip1193Provider | null {
+  if (!connectorId || connectorId === 'browser') return getProvider(connectorId) ?? getProvider('browser')
+  return getProvider(connectorId)
 }
 
 export function listSelfCustodyConnectors(): SelfCustodyConnector[] {
+  requestInjectedProviderDiscovery()
+  const browserAvailable = Boolean(getProvider('browser'))
   return [
     { id: 'metamask', name: 'MetaMask', description: 'Injected browser wallet', available: Boolean(getProvider('metamask')) },
     { id: 'rabby', name: 'Rabby', description: 'Injected browser wallet', available: Boolean(getProvider('rabby')) },
     { id: 'coinbase', name: 'Coinbase Wallet', description: 'Injected browser wallet', available: Boolean(getProvider('coinbase')) },
+    { id: 'browser', name: 'Browser Wallet', description: 'Use whichever EVM wallet is available', available: browserAvailable },
     { id: 'walletconnect', name: 'WalletConnect', description: 'Mobile/session connector', available: false },
   ]
 }
 
-export async function requestAccounts(connectorId: SelfCustodyConnectorId): Promise<string[]> {
-  const provider = getProvider(connectorId)
+export async function connectWallet(connectorId?: SelfCustodyConnectorId | null): Promise<string[]> {
+  return requestAccounts(connectorId ?? 'browser')
+}
+
+export function createWalletInterface(connectorId?: SelfCustodyConnectorId | null): UnifiedWallet {
+  const activeConnectorId = connectorId ?? activeConnectorIdFromPersistence()
+  return {
+    connectWallet: () => connectWallet(activeConnectorId),
+    getAddress: () => getAddress(activeConnectorId),
+    signMessage: (message, address) => signMessage(message, address, activeConnectorId),
+    signTypedData: (typedData, address) => signTypedData(typedData, address, activeConnectorId),
+    sendTransaction: (transaction) => sendTransaction(transaction, activeConnectorId),
+    getProvider: () => getProvider(activeConnectorId),
+  }
+}
+
+export function getActiveWallet(connectorId?: SelfCustodyConnectorId | null): UnifiedWallet {
+  return createWalletInterface(connectorId)
+}
+
+export async function requestAccounts(connectorId: SelfCustodyConnectorId = 'browser'): Promise<string[]> {
+  requestInjectedProviderDiscovery()
+  const provider = getProviderWithFallback(connectorId)
   if (!provider) {
     if (connectorId === 'walletconnect') {
       throw new Error('WalletConnect is not configured in this build.')
     }
-    throw new Error(`No ${connectorId} provider found.`)
+    throw new Error(`No ${connectorLabel(connectorId)} provider found.`)
   }
-  const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[]
-  return accounts
+  return provider.request({ method: 'eth_requestAccounts' }) as Promise<string[]>
 }
 
-export async function getChainId(connectorId?: SelfCustodyConnectorId): Promise<number> {
-  const provider = getProvider(connectorId)
+export async function getAddress(connectorId?: SelfCustodyConnectorId | null): Promise<string | null> {
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) return null
+  const accounts = await provider.request({ method: 'eth_accounts' }) as string[]
+  return accounts[0] ?? null
+}
+
+export async function getChainId(connectorId?: SelfCustodyConnectorId | null): Promise<number> {
+  const provider = getProviderWithFallback(connectorId)
   if (!provider) return 0
   const chainIdHex = await provider.request({ method: 'eth_chainId' }) as string
   return parseInt(chainIdHex, 16)
 }
 
-export async function switchToArcNetwork(connectorId?: SelfCustodyConnectorId): Promise<void> {
-  const provider = getProvider(connectorId)
-  if (!provider) throw new Error('No injected wallet found.')
+export async function signMessage(
+  message: string,
+  address?: string | null,
+  connectorId?: SelfCustodyConnectorId | null,
+): Promise<string> {
+  const signer = address ?? await getAddress(connectorId)
+  if (!signer) throw new Error('Connect an EVM wallet before signing.')
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) throw new Error('No connected EVM wallet provider found.')
+  return provider.request({ method: 'personal_sign', params: [message, signer] }) as Promise<string>
+}
+
+export async function signTypedData(
+  typedData: unknown,
+  address?: string | null,
+  connectorId?: SelfCustodyConnectorId | null,
+): Promise<string> {
+  const signer = address ?? await getAddress(connectorId)
+  if (!signer) throw new Error('Connect an EVM wallet before signing.')
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) throw new Error('No connected EVM wallet provider found.')
+  return provider.request({
+    method: 'eth_signTypedData_v4',
+    params: [signer, JSON.stringify(typedData)],
+  }) as Promise<string>
+}
+
+export async function sendTransaction(
+  transaction: TransactionRequest,
+  connectorId?: SelfCustodyConnectorId | null,
+): Promise<string> {
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) throw new Error('No connected EVM wallet provider found.')
+  const from = transaction.from ?? await getAddress(connectorId)
+  if (!from) throw new Error('Connect an EVM wallet before sending a transaction.')
+  return provider.request({
+    method: 'eth_sendTransaction',
+    params: [{ ...transaction, from }],
+  }) as Promise<string>
+}
+
+export async function waitForTransactionConfirmation(
+  txHash: string,
+  connectorId?: SelfCustodyConnectorId | null,
+  options?: { chainId?: number; timeoutMs?: number; pollIntervalMs?: number },
+): Promise<TransactionConfirmation> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    throw new Error('Transaction hash is invalid.')
+  }
+
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) throw new Error('No connected EVM wallet provider found.')
+
+  const expectedChainId = options?.chainId
+  if (expectedChainId) {
+    const activeChainId = await getChainId(connectorId)
+    if (activeChainId !== expectedChainId) {
+      throw new Error(`Wallet is on chain ${activeChainId}; expected chain ${expectedChainId}.`)
+    }
+  }
+
+  const timeoutMs = options?.timeoutMs ?? 60000
+  const pollIntervalMs = options?.pollIntervalMs ?? 1500
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const receipt = await provider.request({
+      method: 'eth_getTransactionReceipt',
+      params: [txHash],
+    }) as TransactionConfirmation | null
+
+    if (receipt) {
+      if (receipt.status && receipt.status !== '0x1') {
+        throw new Error('Transaction reverted onchain.')
+      }
+      return receipt
+    }
+
+    await delay(pollIntervalMs)
+  }
+
+  throw new Error('Transaction confirmation timed out.')
+}
+
+export async function ensureWalletOnArc(connectorId?: SelfCustodyConnectorId | null): Promise<void> {
+  const chainId = await getChainId(connectorId)
+  if (chainId === ARC_TESTNET.chainId) return
+  await switchToArcNetwork(connectorId)
+}
+
+export async function switchToArcNetwork(connectorId?: SelfCustodyConnectorId | null): Promise<void> {
+  await switchToEthereumChain(ARC_CHAIN_PARAMS, connectorId)
+}
+
+export async function switchToEthereumChain(params: ChainRequestParameters, connectorId?: SelfCustodyConnectorId | null): Promise<void> {
+  const provider = getProviderWithFallback(connectorId)
+  if (!provider) throw new Error('No injected EVM wallet found.')
 
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
-      params: [{ chainId: ARC_CHAIN_PARAMS.chainId }],
+      params: [{ chainId: params.chainId }],
     })
   } catch (err: unknown) {
-    // Chain not added yet — add it
     if ((err as { code?: number })?.code === 4902) {
       await provider.request({
         method: 'wallet_addEthereumChain',
-        params: [ARC_CHAIN_PARAMS],
+        params: [params],
       })
       await provider.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: ARC_CHAIN_PARAMS.chainId }],
+        params: [{ chainId: params.chainId }],
       })
     } else {
       throw err
@@ -673,16 +1134,16 @@ export async function switchToArcNetwork(connectorId?: SelfCustodyConnectorId): 
   }
 }
 
-export function onAccountsChanged(callback: (accounts: string[]) => void, connectorId?: SelfCustodyConnectorId): () => void {
-  const provider = getProvider(connectorId)
+export function onAccountsChanged(callback: (accounts: string[]) => void, connectorId?: SelfCustodyConnectorId | null): () => void {
+  const provider = getProviderWithFallback(connectorId)
   if (!provider) return () => {}
   const typed = provider as unknown as { on?: (event: string, cb: (accounts: string[]) => void) => void; removeListener?: (event: string, cb: (accounts: string[]) => void) => void }
   typed.on?.('accountsChanged', callback)
   return () => typed.removeListener?.('accountsChanged', callback)
 }
 
-export function onChainChanged(callback: (chainId: string) => void, connectorId?: SelfCustodyConnectorId): () => void {
-  const provider = getProvider(connectorId)
+export function onChainChanged(callback: (chainId: string) => void, connectorId?: SelfCustodyConnectorId | null): () => void {
+  const provider = getProviderWithFallback(connectorId)
   if (!provider) return () => {}
   const typed = provider as unknown as { on?: (event: string, cb: (chainId: string) => void) => void; removeListener?: (event: string, cb: (chainId: string) => void) => void }
   typed.on?.('chainChanged', callback)
@@ -702,11 +1163,16 @@ const WATCHLIST_STATE_PREFIX = 'vestige_wallet_watchlist:'
 interface PersistedWallet {
   address: string
   walletType: WalletType
+  connectorId?: SelfCustodyConnectorId | null
 }
 
-export function persistWallet(address: string, walletType: WalletType): void {
+export function persistWallet(
+  address: string,
+  walletType: WalletType,
+  connectorId: SelfCustodyConnectorId | null = null,
+): void {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify({ address, walletType }))
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ address, walletType, connectorId }))
   } catch {}
 }
 
@@ -778,28 +1244,6 @@ export function saveWalletWatchlist(address: string, symbols: string[]): string[
     localStorage.setItem(watchlistKey(address), JSON.stringify(normalized))
   } catch {}
   return normalized
-}
-
-export function creditWalletPortfolioBalance(address: string, amount: string): WalletPortfolioState | null {
-  const numericAmount = Number.parseFloat(amount)
-  if (!address || !Number.isFinite(numericAmount) || numericAmount <= 0) return null
-  const existing = loadWalletPortfolioState(address)
-  const existingBalance = existing?.exposure.usdcBalance ?? 0
-  const updatedBalance = existingBalance + numericAmount
-  const now = new Date().toISOString()
-  return persistWalletPortfolioState({
-    walletAddress: address,
-    walletType: existing?.walletType ?? 'circle',
-    walletId: existing?.walletId,
-    holdings: [{ symbol: 'USDC', amount: updatedBalance.toFixed(2), source: existing?.walletType === 'injected' ? 'rpc' : 'circle' }],
-    watchlist: existing?.watchlist ?? [],
-    exposure: {
-      usdcBalance: updatedBalance,
-      trackedAssets: existing?.exposure.trackedAssets ?? existing?.watchlist.length ?? 0,
-      openPositions: existing?.exposure.openPositions ?? 0,
-    },
-    updatedAt: now,
-  })
 }
 
 export function loadCircleSession(): CircleSession | null {

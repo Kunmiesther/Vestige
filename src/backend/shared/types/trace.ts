@@ -5,11 +5,14 @@ export type PositionSide = "long" | "short" | "neutral";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type TimeHorizon = "intraday" | "swing" | "long-term";
 export type VerdictAction =
-  | "AVOID EXPOSURE"
-  | "DEFENSIVE POSITIONING"
-  | "RANGE CONDITIONS"
-  | "ACCUMULATION BIAS"
-  | "HIGH-CONVICTION EXPANSION";
+  | "Momentum Favors Continuation"
+  | "Structure Weakening"
+  | "Conviction Divergence"
+  | "Liquidity Trap Risk"
+  | "Expansion Setup"
+  | "Fragile Breakout"
+  | "High Beta Rotation"
+  | "Regime Shift Watch";
 export type TraceAccessTier = "public" | "premium" | "institutional";
 
 export interface TracePaymentReceipt {
@@ -18,11 +21,26 @@ export interface TracePaymentReceipt {
   amount: string;
   asset: "USDC";
   network: string;
+  settlementStatus?: "submitted" | "confirmed" | "failed";
   payer?: string;
   payTo?: string;
   txHash?: string;
   facilitatorReference?: string;
   unlockedAt: ISODateTime;
+}
+
+export interface TracePublicationReceipt {
+  publicationId: string;
+  network: string;
+  publisher: string;
+  message: string;
+  signature: string;
+  contentDigest: string;
+  storage: "irys" | "ipfs" | "local";
+  irysId?: string;
+  ipfsCid?: string;
+  txHash?: string;
+  publishedAt: ISODateTime;
 }
 
 export interface TraceIntelligenceMetrics {
@@ -84,6 +102,7 @@ export interface ReasoningTrace {
   locked?: boolean;
   creatorWalletAddress?: string;
   paymentReceipts?: TracePaymentReceipt[];
+  publicationReceipts?: TracePublicationReceipt[];
   traceMetrics?: TraceIntelligenceMetrics;
   createdAt: ISODateTime;
 }

@@ -23,6 +23,7 @@ export async function GET(
     const repo = createTraceRepository();
     const trace = await repo.findTrace(traceId);
     if (!trace) {
+      console.info("[vestige:trace-access]", { event: "trace-not-found", traceId });
       return NextResponse.json(
         { error: { code: "TRACE_NOT_FOUND", message: "Trace not found." } },
         { status: 404 },
@@ -33,11 +34,23 @@ export async function GET(
     const walletAddress = request.headers.get("x-vestige-wallet-address");
     const existingReceipt = hasReceiptForPayment(trace, suppliedReceipt, walletAddress);
     if (existingReceipt) {
+      console.info("[vestige:trace-access]", {
+        event: "receipt-restored",
+        traceId,
+        walletAddress,
+        receiptId: existingReceipt.receiptId,
+      });
       return NextResponse.json({ trace: { ...trace, locked: false }, receipt: existingReceipt });
     }
 
     const access = await createX402Service().authorize(request.headers, `/api/traces/${traceId}/premium`);
     if (!access.allowed && access.challenge) {
+      console.info("[vestige:trace-access]", {
+        event: "payment-required",
+        traceId,
+        walletAddress,
+        unlockCount: traceUnlockCount(trace),
+      });
       return NextResponse.json(
         {
           paymentRequired: access.challenge,
@@ -46,6 +59,7 @@ export async function GET(
         {
           status: 402,
           headers: {
+            "PAYMENT-REQUIRED": JSON.stringify(access.challenge),
             "Payment-Required": JSON.stringify(access.challenge),
           },
         },
@@ -53,32 +67,54 @@ export async function GET(
     }
 
     if (access.receipt) {
+      const paymentReceipts = uniquePaymentReceipts([
+        ...(trace.paymentReceipts ?? []),
+        access.receipt,
+      ]);
+      const existingCount = traceUnlockCount(trace);
+      const newCount = paymentReceipts.length;
+      const demandIncrement = Math.max(0, newCount - existingCount);
       const persistedTrace = {
         ...trace,
         locked: true,
-        paymentReceipts: [...(trace.paymentReceipts ?? []), access.receipt],
-        unlockCount: traceUnlockCount(trace) + 1,
-        demandScore: (trace.demandScore ?? 0) + 1,
+        paymentReceipts,
+        unlockCount: newCount,
+        demandScore: Math.max(trace.demandScore ?? existingCount, existingCount) + demandIncrement,
       };
 
-      await repo.updateTrace(persistedTrace).catch((error) => {
-        console.error("[vestige:x402:receipt-persist-failed]", {
-          traceId,
-          message: error instanceof Error ? error.message : "unknown error",
-        });
+      await repo.updateTrace(persistedTrace);
+      console.info("[vestige:trace-access]", {
+        event: "payment-persisted",
+        traceId,
+        walletAddress: access.receipt.payer ?? walletAddress,
+        receiptId: access.receipt.receiptId,
+        txHash: access.receipt.txHash,
       });
 
-      return NextResponse.json({ trace: { ...persistedTrace, locked: false }, receipt: access.receipt });
+      return NextResponse.json(
+        { trace: { ...persistedTrace, locked: false }, receipt: access.receipt },
+        {
+          headers: {
+            "PAYMENT-RESPONSE": JSON.stringify(access.receipt),
+          },
+        },
+      );
     }
 
     return NextResponse.json({ trace: maskTraceForLockedAccess(trace) });
   } catch (error) {
+    console.error("[vestige:trace-access:failed]", {
+      message: error instanceof Error ? error.message : "unknown",
+      code: error instanceof VestigeError ? error.code : "PREMIUM_TRACE_FAILED",
+    });
     const status = error instanceof VestigeError
-      ? error.code === "X402_NOT_CONFIGURED" || error.code === "X402_FACILITATOR_NOT_CONFIGURED"
+      ? error.code === "X402_NOT_CONFIGURED"
         ? 501
-        : error.code === "X402_PAYMENT_REJECTED"
+        : error.code.startsWith("PAYMENT_") || error.code === "ARC_RPC_FAILED" || error.code === "ARC_CHAIN_MISMATCH"
           ? 402
-          : 500
+          : error.code === "TRACE_UPDATE_FAILED"
+            ? 503
+            : 500
       : 500;
     return NextResponse.json(
       {
@@ -90,4 +126,14 @@ export async function GET(
       { status },
     );
   }
+}
+
+function uniquePaymentReceipts(receipts: NonNullable<PremiumTraceResponse["trace"]["paymentReceipts"]>) {
+  const seen = new Set<string>();
+  return receipts.filter((receipt) => {
+    const key = receipt.txHash ?? receipt.receiptId;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

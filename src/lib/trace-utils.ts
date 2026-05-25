@@ -33,13 +33,13 @@ export function convictionState(trace: ReasoningTrace): string {
 
 export function scoreToConvictionState(score: number | undefined): string {
   if (typeof score === 'number') {
-    if (score <= 20) return 'AVOID EXPOSURE'
-    if (score <= 40) return 'DEFENSIVE POSITIONING'
-    if (score <= 60) return 'RANGE CONDITIONS'
-    if (score <= 80) return 'ACCUMULATION BIAS'
-    return 'HIGH-CONVICTION EXPANSION'
+    if (score <= 25) return 'Liquidity Trap Risk'
+    if (score <= 42) return 'Structure Weakening'
+    if (score <= 58) return 'Conviction Divergence'
+    if (score <= 74) return 'Momentum Favors Continuation'
+    return 'Expansion Setup'
   }
-  return 'RANGE CONDITIONS'
+  return 'Regime Shift Watch'
 }
 
 export function traceAccessTier(trace: ReasoningTrace): TraceAccessTier {
@@ -58,7 +58,7 @@ export function traceUnlockPrice(trace: ReasoningTrace): string {
 }
 
 export function traceUnlockCount(trace: ReasoningTrace): number {
-  return trace.unlockCount ?? trace.paymentReceipts?.length ?? 0
+  return trace.paymentReceipts?.filter(isConfirmedPaymentReceipt).length ?? 0
 }
 
 export function metricLabel(value: number | undefined): string {
@@ -153,12 +153,16 @@ function titleCase(value: string): string {
 
 function convictionTemperatureToState(value: string): string {
   const normalized = value.toLowerCase()
-  if (normalized.includes('cold')) return 'AVOID EXPOSURE'
-  if (normalized.includes('defensive')) return 'DEFENSIVE POSITIONING'
-  if (normalized.includes('balanced')) return 'RANGE CONDITIONS'
-  if (normalized.includes('warming')) return 'ACCUMULATION BIAS'
-  if (normalized.includes('hot')) return 'HIGH-CONVICTION EXPANSION'
+  if (normalized.includes('cold')) return 'Liquidity Trap Risk'
+  if (normalized.includes('defensive')) return 'Structure Weakening'
+  if (normalized.includes('balanced')) return 'Conviction Divergence'
+  if (normalized.includes('warming')) return 'Momentum Favors Continuation'
+  if (normalized.includes('hot')) return 'Expansion Setup'
   return titleCase(value)
+}
+
+function isConfirmedPaymentReceipt(receipt: NonNullable<ReasoningTrace['paymentReceipts']>[number]): boolean {
+  return receipt.settlementStatus === 'confirmed' && /^0x[0-9a-fA-F]{64}$/.test(receipt.txHash ?? receipt.receiptId)
 }
 
 function clamp(value: number): number {

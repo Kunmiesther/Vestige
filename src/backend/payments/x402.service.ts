@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { VestigeError } from "../shared/errors";
+import { verifyArcUsdcTransfer } from "../chain/arc-transaction.service";
+import { ARC_TESTNET, ARC_USDC_CONTRACT_ADDRESS } from "@/lib/arc";
 import type { PaymentChallenge } from "../shared/types/api";
 import type { TracePaymentReceipt } from "../shared/types/trace";
-import { randomUUID } from "node:crypto";
 
 export interface PremiumAccessResult {
   allowed: boolean;
@@ -17,8 +19,11 @@ export class HeaderX402Service implements X402Service {
   constructor(
     private readonly payTo = process.env.X402_PAY_TO,
     private readonly amount = process.env.X402_PREMIUM_TRACE_USDC ?? "0.01",
-    private readonly network = process.env.X402_NETWORK ?? "arc-testnet",
-    private readonly facilitatorUrl = process.env.X402_FACILITATOR_URL,
+    private readonly network = process.env.X402_NETWORK ?? `eip155:${ARC_TESTNET.chainId}`,
+    private readonly assetAddress = process.env.X402_ASSET_ADDRESS ?? process.env.X402_USDC_ASSET_ADDRESS ?? ARC_USDC_CONTRACT_ADDRESS,
+    private readonly maxTimeoutSeconds = Number.parseInt(process.env.X402_MAX_TIMEOUT_SECONDS ?? "604800", 10),
+    private readonly assetName = process.env.X402_ASSET_NAME ?? "USD Coin",
+    private readonly assetVersion = process.env.X402_ASSET_VERSION ?? "2",
   ) {}
 
   async authorize(headers: Headers, resource: string): Promise<PremiumAccessResult> {
@@ -30,110 +35,118 @@ export class HeaderX402Service implements X402Service {
     }
 
     const challenge = this.createChallenge(resource);
-    const payment = headers.get("x-payment");
-    if (!payment) {
-      return {
-        allowed: false,
-        challenge,
-      };
+    const suppliedTxHash = normalizeHash(headers.get("x-vestige-unlock-receipt"));
+    const walletAddress = headers.get("x-vestige-wallet-address") ?? undefined;
+
+    if (!suppliedTxHash) {
+      logX402("challenge-created", {
+        resource,
+        network: challenge.network,
+        amount: challenge.amount,
+        payTo: challenge.payTo,
+        assetAddress: challenge.assetAddress,
+      });
+      return { allowed: false, challenge };
     }
 
-    if (!this.facilitatorUrl) {
-      throw new VestigeError(
-        "x402 payment was supplied but no facilitator is configured. Set X402_FACILITATOR_URL to verify and settle premium trace payments.",
-        "X402_FACILITATOR_NOT_CONFIGURED",
-      );
-    }
+    logX402("payment-verification-started", {
+      resource,
+      network: challenge.network,
+      amount: challenge.amount,
+      payTo: challenge.payTo,
+      txHash: suppliedTxHash,
+      walletAddress,
+    });
 
-    const verified = await this.verifyWithFacilitator(payment, challenge);
-    if (!verified) {
-      throw new VestigeError("x402 payment verification failed.", "X402_PAYMENT_REJECTED");
-    }
+    const verification = await verifyArcUsdcTransfer({
+      txHash: suppliedTxHash,
+      payer: walletAddress,
+      payTo: challenge.payTo,
+      amount: challenge.amount,
+      tokenAddress: challenge.assetAddress,
+    });
 
-    const settlement = await this.settleWithFacilitator(payment, challenge);
-    if (!settlement.settled) {
-      throw new VestigeError("x402 payment settlement failed.", "X402_SETTLEMENT_FAILED");
-    }
+    logX402("payment-verified", {
+      resource,
+      txHash: verification.txHash,
+      payer: verification.payer,
+      amount: verification.amount,
+      payTo: verification.payTo,
+    });
 
     return {
       allowed: true,
       receipt: {
-        receiptId: settlement.receiptId,
+        receiptId: verification.txHash,
         protocol: "x402",
-        amount: challenge.amount,
+        amount: verification.amount,
         asset: "USDC",
-        network: challenge.network,
-        payTo: challenge.payTo,
-        payer: settlement.payer,
-        txHash: settlement.txHash,
-        facilitatorReference: settlement.facilitatorReference,
+        network: verification.network,
+        payTo: verification.payTo,
+        payer: verification.payer,
+        txHash: verification.txHash,
+        settlementStatus: "confirmed",
         unlockedAt: new Date().toISOString(),
       },
     };
   }
 
   private createChallenge(resource: string): PaymentChallenge {
+    const maxTimeoutSeconds = Number.isFinite(this.maxTimeoutSeconds) && this.maxTimeoutSeconds > 0
+      ? this.maxTimeoutSeconds
+      : 300;
+
     return {
       protocol: "x402",
+      x402Version: 2,
+      scheme: "exact",
       resource,
       amount: this.amount,
       asset: "USDC",
-      network: this.network,
+      assetAddress: this.assetAddress,
+      maxAmountRequired: usdcToAtomicAmount(this.amount),
+      maxTimeoutSeconds,
+      network: normalizeX402Network(this.network),
       payTo: this.payTo!,
       description: "Premium Vestige reasoning trace access",
+      mimeType: "application/json",
+      extra: {
+        name: this.assetName,
+        version: this.assetVersion,
+      },
     };
-  }
-
-  private async verifyWithFacilitator(payment: string, challenge: PaymentChallenge): Promise<boolean> {
-    const payload = await this.postFacilitator<{ valid?: boolean; isValid?: boolean }>("verify", payment, challenge);
-    return payload.valid === true || payload.isValid === true;
-  }
-
-  private async settleWithFacilitator(payment: string, challenge: PaymentChallenge): Promise<{
-    settled: boolean;
-    receiptId: string;
-    txHash?: string;
-    payer?: string;
-    facilitatorReference?: string;
-  }> {
-    const payload = await this.postFacilitator<Record<string, unknown>>("settle", payment, challenge);
-    return {
-      settled: payload.success === true || payload.settled === true,
-      receiptId: stringFromPath(payload, ["receiptId", "receipt.id", "id", "settlementId", "data.id"]) ?? randomUUID(),
-      txHash: stringFromPath(payload, ["txHash", "transactionHash", "receipt.transactionHash", "receipt.txHash", "data.txHash"]),
-      payer: stringFromPath(payload, ["payer", "from", "sender", "data.payer"]),
-      facilitatorReference: stringFromPath(payload, ["reference", "data.reference", "paymentId", "data.paymentId"]),
-    };
-  }
-
-  private async postFacilitator<T>(path: "verify" | "settle", payment: string, challenge: PaymentChallenge): Promise<T> {
-    const response = await fetch(`${this.facilitatorUrl!.replace(/\/$/, "")}/${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        payment,
-        paymentRequirements: challenge,
-      }),
-    });
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new VestigeError(`x402 facilitator ${path} request failed (${response.status}).`, "X402_FACILITATOR_FAILED");
-    }
-
-    return payload as T;
   }
 }
 
-function stringFromPath(record: Record<string, unknown>, paths: string[]): string | undefined {
-  for (const path of paths) {
-    const value = path.split(".").reduce<unknown>((current, key) => {
-      if (!current || typeof current !== "object") return undefined;
-      return (current as Record<string, unknown>)[key];
-    }, record);
-    if (typeof value === "string" && value.trim()) return value;
+function usdcToAtomicAmount(amount: string): string {
+  const normalized = amount.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return "0";
+  const [whole, fraction = ""] = normalized.split(".");
+  const atomic = `${whole}${fraction.padEnd(6, "0").slice(0, 6)}`.replace(/^0+(?=\d)/, "");
+  return atomic || "0";
+}
+
+function normalizeX402Network(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "arc-testnet" || normalized === "arc") {
+    return `eip155:${ARC_TESTNET.chainId}`;
   }
-  return undefined;
+  if (/^\d+$/.test(normalized)) {
+    return `eip155:${normalized}`;
+  }
+  if (normalized.startsWith("eip155:")) {
+    return normalized;
+  }
+  return value.trim();
+}
+
+function normalizeHash(value: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && /^0x[0-9a-fA-F]{64}$/.test(trimmed) ? trimmed : undefined;
+}
+
+function logX402(event: string, details?: Record<string, unknown>): void {
+  console.info("[vestige:x402]", { event, ...details });
 }
 
 export function createX402Service(): X402Service {

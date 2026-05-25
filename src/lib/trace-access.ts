@@ -54,6 +54,13 @@ export function loadTraceAccess(traceId: string): StoredTraceAccess | null {
   return null
 }
 
+export function clearTraceAccess(traceId: string): void {
+  if (typeof window === 'undefined' || !traceId) return
+  try {
+    window.localStorage.removeItem(key(traceId))
+  } catch {}
+}
+
 function key(traceId: string): string {
   return `${TRACE_ACCESS_PREFIX}${traceId}`
 }
