@@ -23,7 +23,6 @@ export async function GET(
     const repo = createTraceRepository();
     const trace = await repo.findTrace(traceId);
     if (!trace) {
-      console.info("[vestige:trace-access]", { event: "trace-not-found", traceId });
       return NextResponse.json(
         { error: { code: "TRACE_NOT_FOUND", message: "Trace not found." } },
         { status: 404 },
@@ -34,23 +33,11 @@ export async function GET(
     const walletAddress = request.headers.get("x-vestige-wallet-address");
     const existingReceipt = hasReceiptForPayment(trace, suppliedReceipt, walletAddress);
     if (existingReceipt) {
-      console.info("[vestige:trace-access]", {
-        event: "receipt-restored",
-        traceId,
-        walletAddress,
-        receiptId: existingReceipt.receiptId,
-      });
       return NextResponse.json({ trace: { ...trace, locked: false }, receipt: existingReceipt });
     }
 
     const access = await createX402Service().authorize(request.headers, `/api/traces/${traceId}/premium`);
     if (!access.allowed && access.challenge) {
-      console.info("[vestige:trace-access]", {
-        event: "payment-required",
-        traceId,
-        walletAddress,
-        unlockCount: traceUnlockCount(trace),
-      });
       return NextResponse.json(
         {
           paymentRequired: access.challenge,
@@ -83,13 +70,6 @@ export async function GET(
       };
 
       await repo.updateTrace(persistedTrace);
-      console.info("[vestige:trace-access]", {
-        event: "payment-persisted",
-        traceId,
-        walletAddress: access.receipt.payer ?? walletAddress,
-        receiptId: access.receipt.receiptId,
-        txHash: access.receipt.txHash,
-      });
 
       return NextResponse.json(
         { trace: { ...persistedTrace, locked: false }, receipt: access.receipt },

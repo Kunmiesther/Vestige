@@ -5,7 +5,7 @@ export default function HomePage() {
     <main>
 
       {/* ── HERO ── */}
-      <section style={{
+      <section className="home-hero" style={{
         minHeight: 'calc(100vh - 56px)',
         display: 'flex',
         flexDirection: 'column',
@@ -44,7 +44,7 @@ export default function HomePage() {
         {/* Content */}
         <div style={{ position: 'relative', zIndex: 3, maxWidth: 1200, margin: '0 auto', width: '100%' }}>
           {/* Ticker tape top */}
-          <div style={{
+          <div className="home-ticker" style={{
             display: 'flex',
             alignItems: 'center',
             gap: 24,
@@ -77,7 +77,7 @@ export default function HomePage() {
           </div>
 
           {/* Main headline */}
-          <div style={{ marginBottom: 40, overflow: 'hidden' }}>
+          <div className="home-headline" style={{ marginBottom: 40, overflow: 'hidden' }}>
             <h1
               className="display-xl"
               style={{
@@ -100,7 +100,7 @@ export default function HomePage() {
           </div>
 
           {/* Subhead + CTA row */}
-          <div style={{
+          <div className="home-hero-actions" style={{
             display: 'grid',
             gridTemplateColumns: '1fr auto',
             gap: 40,
@@ -132,7 +132,7 @@ export default function HomePage() {
           </div>
 
           {/* Stats row */}
-          <div style={{
+          <div className="home-stats-strip" style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(4, 1fr)',
             border: '1px solid var(--border)',
@@ -170,7 +170,7 @@ export default function HomePage() {
       <hr className="ruled" style={{ maxWidth: 1200, margin: '0 auto' }} />
 
       {/* ── WHAT IT IS ── with trader image */}
-      <section style={{
+      <section className="home-trader-section" style={{
         padding: '100px 32px',
         maxWidth: '100%',
         position: 'relative',
@@ -195,7 +195,7 @@ export default function HomePage() {
         }} />
 
         <div style={{ position: 'relative', zIndex: 2, maxWidth: 1200, margin: '0 auto' }}>
-          <div style={{
+          <div className="home-trader-grid" style={{
             display: 'grid',
             gridTemplateColumns: '280px 1fr',
             gap: 80,
@@ -238,7 +238,7 @@ export default function HomePage() {
                   color: 'var(--text-tertiary)',
                 }}>you pay to follow.</span>
               </h2>
-              <div style={{
+              <div className="home-feature-grid" style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr',
                 gap: 16,
@@ -308,8 +308,8 @@ export default function HomePage() {
       <hr className="ruled" style={{ maxWidth: 1200, margin: '0 auto' }} />
 
       {/* ── FIELDS SHOWCASE ── */}
-      <section style={{ padding: '100px 32px', maxWidth: 1200, margin: '0 auto' }}>
-        <div style={{ marginBottom: 60 }}>
+      <section className="home-fields-section" style={{ padding: '100px 32px', maxWidth: 1200, margin: '0 auto' }}>
+        <div className="home-section-heading" style={{ marginBottom: 60 }}>
           <div className="mono-label" style={{ marginBottom: 12 }}>002 — What you see in every trace</div>
           <h2 className="display-md" style={{ color: 'var(--text-primary)' }}>
             Not black-box scores.<br />
@@ -344,7 +344,7 @@ export default function HomePage() {
               desc: 'Required. The agent must state its own invalidation criteria before entering.',
             },
           ].map((row) => (
-            <div key={row.field} style={{
+            <div key={row.field} className="home-field-row" style={{
               display: 'grid',
               gridTemplateColumns: '160px 1fr 1fr',
               gap: 0,
@@ -383,7 +383,7 @@ export default function HomePage() {
       <hr className="ruled" style={{ maxWidth: 1200, margin: '0 auto' }} />
 
       {/* ── CTA ── with nodes image */}
-      <section style={{
+      <section className="home-cta-section" style={{
         padding: '120px 32px 140px',
         textAlign: 'center',
         position: 'relative',

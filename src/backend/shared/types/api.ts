@@ -67,43 +67,6 @@ export interface GetMarketSnapshotResponse {
   snapshot: MarketSnapshot | null;
 }
 
-export interface CctpQuoteRequest {
-  fromChainId: number;
-  toChainId: number;
-  amount: string;
-  recipient: string;
-  walletAddress?: string;
-  tokenAddress?: string;
-  walletId?: string;
-}
-
-export interface CctpQuoteResponse {
-  configured: boolean;
-  message: string;
-  quoteId?: string;
-}
-
-export interface CctpTransferRequest extends CctpQuoteRequest {
-  quoteId?: string;
-  sourceTxHash?: string;
-}
-
-export interface CctpTransferResponse {
-  configured: boolean;
-  message: string;
-  transferId?: string;
-  status?: 'queued' | 'submitted' | 'pending' | 'attesting' | 'completed';
-}
-
-export interface CctpBridgeStatusResponse {
-  configured: boolean;
-  reason?: string;
-  apiUrlConfigured: boolean;
-  apiKeyConfigured: boolean;
-  supportedSourceChains: number[];
-  destinationChainId: number;
-}
-
 export interface PaymentChallenge {
   protocol: 'x402';
   x402Version?: 1 | 2;
@@ -142,6 +105,9 @@ export interface PremiumTracePreview {
   totalUsdcGenerated?: string;
   creatorWalletAddress?: string;
   demandScore?: number;
+  publicationCount?: number;
+  lastPaymentReceipt?: TracePaymentReceipt;
+  lastPublicationReceipt?: TracePublicationReceipt;
   createdAt: string;
 }
 

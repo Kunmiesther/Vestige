@@ -98,12 +98,10 @@ export class CompositeMarketDataService implements MarketDataService {
     const rejected = quotes.filter((quote) => deviation(quote.price, consensusPrice) > MAX_SOURCE_DEVIATION);
     const accepted = quotes.filter((quote) => deviation(quote.price, consensusPrice) <= MAX_SOURCE_DEVIATION);
     if (accepted.length === 0 || accepted.length < Math.min(2, quotes.length)) {
-      console.error("[vestige:market:validation-failed]", {
-        symbol: normalized,
-        consensusPrice,
-        quotes,
-        rejected,
-      });
+      const logDetails = process.env.NODE_ENV === "production"
+        ? { symbol: normalized, consensusPrice, quoteCount: quotes.length, rejectedCount: rejected.length }
+        : { symbol: normalized, consensusPrice, quotes, rejected };
+      console.error("[vestige:market:validation-failed]", logDetails);
       throw new VestigeError("Live market data unavailable. Analysis aborted.", "LIVE_MARKET_DATA_UNAVAILABLE");
     }
 

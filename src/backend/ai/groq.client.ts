@@ -90,17 +90,17 @@ export class GroqHttpClient implements GroqClient {
         try {
           const result = parseJsonContent(content);
           if (result.repaired) {
-            console.warn("[vestige:groq:json-repaired]", {
-              repairSteps: result.repairSteps,
-              rawModelResponse: content,
-            });
+            const logDetails = process.env.NODE_ENV === "production"
+              ? { repairSteps: result.repairSteps, rawLength: content.length }
+              : { repairSteps: result.repairSteps, rawModelResponse: content };
+            console.warn("[vestige:groq:json-repaired]", logDetails);
           }
           return result;
         } catch (error) {
-          console.error("[vestige:groq:invalid-json]", {
-            rawModelResponse: content,
-            error: error instanceof Error ? error.message : "unknown error",
-          });
+          const logDetails = process.env.NODE_ENV === "production"
+            ? { rawLength: content.length, error: error instanceof Error ? error.message : "unknown error" }
+            : { rawModelResponse: content, error: error instanceof Error ? error.message : "unknown error" };
+          console.error("[vestige:groq:invalid-json]", logDetails);
           throw error;
         }
       }

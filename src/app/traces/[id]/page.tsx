@@ -345,7 +345,6 @@ export default function TraceDetailPage() {
       scheduleUnlockStateReset()
       void withTimeout(wallet.refreshBalance(), BALANCE_REFRESH_TIMEOUT_MS, 'Balance refresh timed out.').catch(() => undefined)
     } catch (e) {
-      console.error('[vestige:x402:unlock-failed]', e)
       setActionError(paymentErrorMessage(e))
       setUnlockState('unlock_failed')
       scheduleUnlockStateReset()
@@ -414,12 +413,18 @@ export default function TraceDetailPage() {
         'Trace publication timed out.',
       )
       setTrace({ ...result.trace, locked: false })
-      setPublicationReceipt(result.receipt)
+      setPublicationReceipt({
+        ...result.receipt,
+        txHash: publicationTxHash,
+        amount: result.receipt.amount ?? ARC_PUBLISH_FEE_USDC,
+        asset: result.receipt.asset ?? 'USDC',
+        payTo: result.receipt.payTo ?? ARC_PUBLISH_PAY_TO,
+        settlementStatus: result.receipt.settlementStatus ?? 'confirmed',
+      })
       setPublishState('published')
       schedulePublishStateReset()
       void withTimeout(wallet.refreshBalance(), BALANCE_REFRESH_TIMEOUT_MS, 'Balance refresh timed out.').catch(() => undefined)
     } catch (e) {
-      console.error('[vestige:publish:failed]', e)
       setActionError(publishErrorMessage(e))
       setPublishState('failed')
       schedulePublishStateReset()
@@ -450,6 +455,9 @@ export default function TraceDetailPage() {
   }
 
   if (loading) return <Skeleton />
+
+  const previewPaymentReceipt = tracePreview?.lastPaymentReceipt
+  const previewPublicationReceipt = tracePreview?.lastPublicationReceipt
 
   if (paymentRequired && !trace) return (
     <main style={{ padding: '48px 32px 100px', maxWidth: 980, margin: '0 auto' }}>
@@ -494,6 +502,7 @@ export default function TraceDetailPage() {
             { k: 'Created', v: tracePreview?.createdAt ? formatDate(tracePreview.createdAt) : 'No data yet' },
             { k: 'Unlocks', v: String(tracePreview?.unlockCount ?? 0) },
             { k: 'USDC generated', v: tracePreview?.totalUsdcGenerated ?? '0.00' },
+            { k: 'Publications', v: String(tracePreview?.publicationCount ?? 0) },
           ].map(item => (
             <div key={item.k} style={{ background: 'var(--bg-card)', padding: '14px 16px' }}>
               <div className="mono-label" style={{ marginBottom: 5 }}>{item.k}</div>
@@ -508,6 +517,52 @@ export default function TraceDetailPage() {
             marginBottom: 18, wordBreak: 'break-all', lineHeight: 1.7,
           }}>
             Creator wallet {tracePreview.creatorWalletAddress}
+          </div>
+        )}
+
+        {(previewPaymentReceipt || previewPublicationReceipt) && (
+          <div style={{
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)',
+            background: 'rgba(255,255,255,0.025)',
+            padding: '14px 16px',
+            marginBottom: 22,
+          }}>
+            <div className="mono-label" style={{ marginBottom: 10 }}>Transaction visibility</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}>
+              {previewPaymentReceipt && (
+                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 12px', minWidth: 0 }}>
+                  <div className="mono-label" style={{ marginBottom: 7 }}>Latest unlock</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)', marginBottom: 5 }}>
+                    {previewPaymentReceipt.amount} {previewPaymentReceipt.asset}
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    {formatDate(previewPaymentReceipt.unlockedAt)}
+                  </div>
+                  {previewPaymentReceipt.txHash && (
+                    <a href={arcTxUrl(previewPaymentReceipt.txHash)} target="_blank" rel="noopener noreferrer" className="btn-ghost" style={{ marginTop: 10, fontSize: 10, padding: '6px 10px' }}>
+                      View unlock tx
+                    </a>
+                  )}
+                </div>
+              )}
+              {previewPublicationReceipt && (
+                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 12px', minWidth: 0 }}>
+                  <div className="mono-label" style={{ marginBottom: 7 }}>Latest publication</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)', marginBottom: 5 }}>
+                    {previewPublicationReceipt.amount ?? ARC_PUBLISH_FEE_USDC} {previewPublicationReceipt.asset ?? 'USDC'}
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    {formatDate(previewPublicationReceipt.publishedAt)}
+                  </div>
+                  {previewPublicationReceipt.txHash && (
+                    <a href={arcTxUrl(previewPublicationReceipt.txHash)} target="_blank" rel="noopener noreferrer" className="btn-ghost" style={{ marginTop: 10, fontSize: 10, padding: '6px 10px' }}>
+                      View publish tx
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1014,9 +1069,21 @@ export default function TraceDetailPage() {
                     </div>
                     <span className="mono-label" style={{ marginBottom: 0 }}>Amount</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)' }}>{receipt.amount} {receipt.asset}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Payer</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                      {receipt.payer ?? 'Unknown'}
+                    </div>
+                    {receipt.payTo && (
+                      <>
+                        <span className="mono-label" style={{ marginBottom: 0 }}>Pay to</span>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                          {receipt.payTo}
+                        </div>
+                      </>
+                    )}
                     <span className="mono-label" style={{ marginBottom: 0 }}>Network</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{receipt.network}</div>
-                    <span className="mono-label" style={{ marginBottom: 0 }}>Unlocked</span>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Timestamp</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{formatDate(receipt.unlockedAt)}</div>
                     <span className="mono-label" style={{ marginBottom: 0 }}>Settlement</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: receipt.settlementStatus === 'confirmed' ? 'var(--lime)' : 'var(--violet)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -1049,9 +1116,23 @@ export default function TraceDetailPage() {
                     </div>
                     <span className="mono-label" style={{ marginBottom: 0 }}>Publisher</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{receipt.publisher}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Amount</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)' }}>{receipt.amount ?? ARC_PUBLISH_FEE_USDC} {receipt.asset ?? 'USDC'}</div>
+                    {receipt.payTo && (
+                      <>
+                        <span className="mono-label" style={{ marginBottom: 0 }}>Pay to</span>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{receipt.payTo}</div>
+                      </>
+                    )}
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Network</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{receipt.network}</div>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Settlement</span>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: receipt.settlementStatus === 'failed' ? 'var(--ember)' : 'var(--lime)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {receipt.settlementStatus ?? 'confirmed'}
+                    </div>
                     <span className="mono-label" style={{ marginBottom: 0 }}>Storage</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--lime)', textTransform: 'uppercase' }}>{receipt.storage}</div>
-                    <span className="mono-label" style={{ marginBottom: 0 }}>Published</span>
+                    <span className="mono-label" style={{ marginBottom: 0 }}>Timestamp</span>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{formatDate(receipt.publishedAt)}</div>
                     {receipt.txHash && (
                       <>

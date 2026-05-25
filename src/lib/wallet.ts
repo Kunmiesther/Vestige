@@ -210,7 +210,13 @@ type CircleSdkConstructor = new (configs?: CircleSdkConfigs, onLoginComplete?: C
 interface CircleRuntime {
   W3SSdk: CircleSdkConstructor
   SocialLoginProvider: { GOOGLE: string }
-  ChallengeStatus: { COMPLETE: string }
+  ChallengeStatus: {
+    COMPLETE: string
+    EXPIRED?: string
+    FAILED?: string
+    IN_PROGRESS?: string
+    PENDING?: string
+  }
 }
 
 export interface WalletActions {
@@ -227,6 +233,11 @@ class CircleWalletOperationError extends Error {
     this.name = 'CircleWalletOperationError'
   }
 }
+
+const PRODUCTION_APP_URL = 'https://vestige-ai.vercel.app'
+const CIRCLE_CALLBACK_PATH = '/circle/callback'
+const CIRCLE_CHALLENGE_TIMEOUT_MS = 150000
+const CIRCLE_ARC_BLOCKCHAIN = 'ARC-TESTNET'
 
 // ─── Circle user-controlled wallet helpers ───────────────────────────────
 
@@ -575,16 +586,31 @@ async function initializeCircleUserWallet(
 
   if (initialized.challengeId) {
     circleAuthLog('challenge:execute-start')
-    await executeCircleChallenge(sdk, runtime, initialized.challengeId)
-    circleAuthLog('challenge:execute-complete')
+    const challenge = await executeCircleChallenge(sdk, runtime, initialized.challengeId)
+    circleAuthLog('challenge:execute-complete', { status: challenge?.status })
   } else if (initialized.alreadyInitialized) {
     circleAuthLog('initialize:already-initialized')
   } else {
     throw new Error('Circle did not return an initialization challenge or existing-user state.')
   }
 
-  const wallets = await listCircleWalletsWithRetry(loginResult.userToken)
-  const wallet = selectCircleWallet(wallets)
+  let wallets = await listCircleWalletsWithRetry(loginResult.userToken)
+  let wallet = selectCircleWallet(wallets)
+  if (!wallet?.address) {
+    circleAuthLog('wallet:create-start')
+    const created = await circleEndpoint<{ challengeId?: string }>('createWallet', {
+      userToken: loginResult.userToken,
+      accountType: 'SCA',
+    })
+    if (!created.challengeId) {
+      throw new Error('Circle did not return a wallet creation challenge.')
+    }
+    const challenge = await executeCircleChallenge(sdk, runtime, created.challengeId)
+    circleAuthLog('wallet:create-complete', { status: challenge?.status })
+    wallets = await listCircleWalletsWithRetry(loginResult.userToken)
+    wallet = selectCircleWallet(wallets)
+  }
+
   if (!wallet?.address) throw new Error('Circle did not return an Arc wallet for this user.')
 
   circleAuthLog('wallet:list-complete', {
@@ -602,27 +628,62 @@ function executeCircleChallenge(
 ): Promise<CircleChallengeResult | undefined> {
   return new Promise((resolve, reject) => {
     let settled = false
+    let pendingTimer: number | null = null
+    const clearPendingTimer = () => {
+      if (!pendingTimer) return
+      window.clearTimeout(pendingTimer)
+      pendingTimer = null
+    }
     const timeout = window.setTimeout(() => {
       if (settled) return
       settled = true
-      reject(new Error('Circle wallet challenge timed out.'))
-    }, 120000)
+      clearPendingTimer()
+      reject(new Error('Circle wallet setup timed out. Please try connecting again.'))
+    }, CIRCLE_CHALLENGE_TIMEOUT_MS)
 
     sdk.execute(challengeId, (error, result) => {
       if (settled) return
-      settled = true
-      window.clearTimeout(timeout)
 
       if (error) {
+        settled = true
+        window.clearTimeout(timeout)
+        clearPendingTimer()
         reject(new CircleWalletOperationError(error.message ?? 'Circle wallet challenge failed.', error.code))
         return
       }
 
-      if (result?.status && result.status !== runtime.ChallengeStatus.COMPLETE) {
-        reject(new CircleWalletOperationError(`Circle wallet challenge ended with status ${result.status}.`))
+      const status = result?.status
+      if (isCircleChallengeSuccess(status, runtime)) {
+        settled = true
+        window.clearTimeout(timeout)
+        clearPendingTimer()
+        resolve(result)
         return
       }
 
+      if (isCircleChallengePending(status, runtime)) {
+        circleAuthLog('challenge:pending', { status })
+        clearPendingTimer()
+        pendingTimer = window.setTimeout(() => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timeout)
+          resolve(result)
+        }, 2500)
+        return
+      }
+
+      if (status) {
+        settled = true
+        window.clearTimeout(timeout)
+        clearPendingTimer()
+        reject(new CircleWalletOperationError(circleChallengeFailureMessage(status)))
+        return
+      }
+
+      settled = true
+      window.clearTimeout(timeout)
+      clearPendingTimer()
       resolve(result)
     })
   })
@@ -647,7 +708,7 @@ async function listCircleWalletsWithRetry(userToken: string): Promise<CircleWall
 }
 
 function selectCircleWallet(wallets: CircleWallet[]): CircleWallet | null {
-  return wallets.find(item => item.blockchain === 'ARC-TESTNET') ?? wallets[0] ?? null
+  return wallets.find(item => item.blockchain === CIRCLE_ARC_BLOCKCHAIN) ?? null
 }
 
 function configureExistingCircleSdk(
@@ -722,9 +783,10 @@ function circleConfig() {
     throw new Error('Circle Google login is only available in the browser.')
   }
 
+  const appOrigin = resolveAppOrigin()
   const configuredRedirectUri = process.env.NEXT_PUBLIC_CIRCLE_REDIRECT_URI?.trim()
-  const redirectUri = normalizeRedirectUri(configuredRedirectUri || `${window.location.origin}/circle/callback`)
-  const currentOrigin = normalizeRedirectUri(window.location.origin)
+  const redirectUri = resolveCircleRedirectUri(configuredRedirectUri, appOrigin)
+  const currentOrigin = normalizeOrigin(window.location.origin)
 
   if (new URL(redirectUri).origin !== currentOrigin) {
     circleAuthLog('redirect-uri:cross-origin', { redirectUri, currentOrigin })
@@ -737,6 +799,72 @@ function circleConfig() {
 
 function normalizeRedirectUri(uri: string): string {
   return uri.replace(/\/$/, '')
+}
+
+function resolveAppOrigin(): string {
+  const configured = process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.APP_URL?.trim()
+  const browserOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+  const candidate = configured || browserOrigin || PRODUCTION_APP_URL
+  const origin = normalizeOrigin(candidate)
+
+  if (isLocalOrigin(origin) && browserOrigin && !isLocalOrigin(browserOrigin)) {
+    return PRODUCTION_APP_URL
+  }
+
+  return origin
+}
+
+function resolveCircleRedirectUri(configuredRedirectUri: string | undefined, appOrigin: string): string {
+  const fallback = `${appOrigin}${CIRCLE_CALLBACK_PATH}`
+  if (!configuredRedirectUri) return fallback
+
+  try {
+    const url = new URL(configuredRedirectUri, appOrigin)
+    if (isLocalOrigin(url.origin) && !isLocalOrigin(appOrigin)) {
+      return fallback
+    }
+    if (url.pathname === '/' || url.pathname === '') {
+      url.pathname = CIRCLE_CALLBACK_PATH
+    }
+    url.hash = ''
+    return normalizeRedirectUri(url.toString())
+  } catch {
+    return fallback
+  }
+}
+
+function normalizeOrigin(value: string): string {
+  try {
+    return new URL(value).origin
+  } catch {
+    return normalizeRedirectUri(value)
+  }
+}
+
+function isLocalOrigin(origin: string): boolean {
+  try {
+    const hostname = new URL(origin).hostname
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0'
+  } catch {
+    return false
+  }
+}
+
+function isCircleChallengeSuccess(status: string | undefined, runtime: CircleRuntime): boolean {
+  return !status || status === runtime.ChallengeStatus.COMPLETE || status === 'COMPLETE'
+}
+
+function isCircleChallengePending(status: string | undefined, runtime: CircleRuntime): boolean {
+  return status === runtime.ChallengeStatus.IN_PROGRESS ||
+    status === runtime.ChallengeStatus.PENDING ||
+    status === 'IN_PROGRESS' ||
+    status === 'PENDING'
+}
+
+function circleChallengeFailureMessage(status: string): string {
+  if (status === 'EXPIRED') return 'Circle wallet setup expired. Start Google login again.'
+  if (status === 'FAILED') return 'Circle wallet setup failed. Try again or use a browser wallet.'
+  return `Circle wallet setup ended with status ${status}.`
 }
 
 async function circleEndpoint<T>(action: string, body: Record<string, unknown>): Promise<T> {
@@ -1318,7 +1446,7 @@ function clearCircleSdkOAuthState(): void {
 }
 
 function circleAuthLog(step: string, details?: Record<string, unknown>): void {
-  if (typeof console === 'undefined') return
+  if (typeof console === 'undefined' || process.env.NODE_ENV === 'production') return
   const payload = { step, ...details }
   console.info('[vestige:circle]', payload)
 }

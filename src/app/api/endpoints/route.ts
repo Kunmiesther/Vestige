@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import {
   CircleApiError,
+  createUserWallet,
   createDeviceToken,
   getTokenBalance,
   initializeUser,
@@ -10,6 +11,7 @@ import {
 type CircleEndpointAction =
   | 'createDeviceToken'
   | 'initializeUser'
+  | 'createWallet'
   | 'listWallets'
   | 'getTokenBalance'
 
@@ -22,8 +24,10 @@ interface CircleEndpointRequest {
 }
 
 export async function POST(request: Request) {
+  let action: CircleEndpointAction | undefined
   try {
     const body = await request.json() as CircleEndpointRequest
+    action = body.action
 
     switch (body.action) {
       case 'createDeviceToken': {
@@ -39,6 +43,15 @@ export async function POST(request: Request) {
           accountType: body.accountType,
         })
         return NextResponse.json({ action: body.action, ...initialized })
+      }
+
+      case 'createWallet': {
+        if (!body.userToken) throw new Error('Missing Circle user token.')
+        const created = await createUserWallet({
+          userToken: body.userToken,
+          accountType: body.accountType,
+        })
+        return NextResponse.json({ action: body.action, ...created })
       }
 
       case 'listWallets': {
@@ -63,18 +76,27 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Circle endpoint request failed.'
     if (error instanceof CircleApiError) {
+      const isProduction = process.env.NODE_ENV === 'production'
       const developmentDetails = process.env.NODE_ENV !== 'production'
         ? formatDevelopmentCircleError(error)
         : undefined
-      console.error('[Circle API route] upstream error', {
-        action: 'circle-endpoint',
-        method: error.method,
-        url: error.url,
-        status: error.status,
-        statusText: error.statusText,
-        circleCode: error.circleCode,
-        body: error.body,
-      })
+      const logDetails = isProduction
+        ? {
+          action,
+          status: error.status,
+          statusText: error.statusText,
+          circleCode: error.circleCode,
+        }
+        : {
+          action,
+          method: error.method,
+          url: error.url,
+          status: error.status,
+          statusText: error.statusText,
+          circleCode: error.circleCode,
+          body: error.body,
+        }
+      console.error('[Circle API route] upstream error', logDetails)
 
       return NextResponse.json(
         {
@@ -85,8 +107,7 @@ export async function POST(request: Request) {
               status: error.status,
               statusText: error.statusText,
               circleCode: error.circleCode,
-              url: error.url,
-              body: error.body,
+              ...(isProduction ? {} : { url: error.url, body: error.body }),
             },
           },
         },

@@ -141,8 +141,7 @@ function RunModal({
       onSuccess(result.trace)
     } catch (err) {
       setPhase('idle')
-      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Unexpected error. Check the console.')
-      console.error(err)
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Unexpected analysis error. Try again.')
     } finally {
       setLoading(false)
     }

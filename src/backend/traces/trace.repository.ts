@@ -566,6 +566,10 @@ function asPublicationReceipts(value: unknown): ReasoningTrace["publicationRecei
     return typeof record.publicationId === "string" &&
       typeof record.network === "string" &&
       typeof record.publisher === "string" &&
+      (record.amount === undefined || typeof record.amount === "string") &&
+      (record.asset === undefined || record.asset === "USDC") &&
+      (record.payTo === undefined || typeof record.payTo === "string") &&
+      (record.settlementStatus === undefined || record.settlementStatus === "submitted" || record.settlementStatus === "confirmed" || record.settlementStatus === "failed") &&
       typeof record.message === "string" &&
       typeof record.signature === "string" &&
       typeof record.contentDigest === "string" &&

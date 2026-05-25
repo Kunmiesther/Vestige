@@ -146,6 +146,7 @@ function normalizeHash(value: string | null): string | undefined {
 }
 
 function logX402(event: string, details?: Record<string, unknown>): void {
+  if (process.env.NODE_ENV === "production") return;
   console.info("[vestige:x402]", { event, ...details });
 }
 

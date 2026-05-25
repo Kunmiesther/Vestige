@@ -316,13 +316,13 @@ export class DefaultAgentRunner implements AgentRunner {
       return finalizeGeneratedTraceBody(parsed.data, contributions, input);
     }
 
-    console.error("[vestige:agents:synthesis-validation-failed]", {
-      rawModelResponse: generated.raw,
-      parsedModelResponse: generated.parsed,
+    console.error("[vestige:agents:synthesis-validation-failed]", modelValidationLog({
+      raw: generated.raw,
+      parsed: generated.parsed,
       repaired: generated.repaired,
       repairSteps: generated.repairSteps,
       issues: parsed.error.flatten(),
-    });
+    }));
 
     return synthesizeFromContributions(input, contributions);
   }
@@ -378,15 +378,15 @@ export class DefaultAgentRunner implements AgentRunner {
     const normalized = normalizeAgentContribution(profile, generated.parsed);
     const parsed = agentContributionSchema.safeParse(normalized);
     if (!parsed.success) {
-      console.error("[vestige:agents:contribution-validation-failed]", {
+      console.error("[vestige:agents:contribution-validation-failed]", modelValidationLog({
         agent: profile.name,
-        rawModelResponse: generated.raw,
-        parsedModelResponse: generated.parsed,
+        raw: generated.raw,
+        parsed: generated.parsed,
         normalizedContribution: normalized,
         repaired: generated.repaired,
         repairSteps: generated.repairSteps,
         issues: parsed.error.flatten(),
-      });
+      }));
       throw new VestigeError(`${profile.name} returned an invalid structured contribution.`, "AGENT_OUTPUT_INVALID");
     }
 
@@ -746,6 +746,36 @@ function compactContributionsForSynthesis(contributions: AgentContribution[]): A
     opportunities: contribution.opportunities.slice(0, 2),
     recommendation: contribution.recommendation,
   }));
+}
+
+function modelValidationLog(input: {
+  agent?: string;
+  raw: string;
+  parsed: unknown;
+  normalizedContribution?: unknown;
+  repaired: boolean;
+  repairSteps: string[];
+  issues: unknown;
+}): Record<string, unknown> {
+  if (process.env.NODE_ENV === "production") {
+    return {
+      agent: input.agent,
+      rawLength: input.raw.length,
+      repaired: input.repaired,
+      repairStepCount: input.repairSteps.length,
+      issues: input.issues,
+    };
+  }
+
+  return {
+    agent: input.agent,
+    rawModelResponse: input.raw,
+    parsedModelResponse: input.parsed,
+    normalizedContribution: input.normalizedContribution,
+    repaired: input.repaired,
+    repairSteps: input.repairSteps,
+    issues: input.issues,
+  };
 }
 
 function fallbackContribution(

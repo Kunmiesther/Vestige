@@ -20,11 +20,6 @@ import type {
   PublishTraceRequest,
   PublishTraceResponse,
   GetMarketSnapshotResponse,
-  CctpQuoteRequest,
-  CctpQuoteResponse,
-  CctpTransferRequest,
-  CctpTransferResponse,
-  CctpBridgeStatusResponse,
   ApiErrorResponse,
 } from '@/backend/shared/types/api'
 
@@ -210,24 +205,6 @@ export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot 
   return data.snapshot
 }
 
-export async function getCctpQuote(request: CctpQuoteRequest): Promise<CctpQuoteResponse> {
-  return apiFetch<CctpQuoteResponse>('/api/bridge/cctp/quote', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  })
-}
-
-export async function getCctpBridgeStatus(): Promise<CctpBridgeStatusResponse> {
-  return apiFetch<CctpBridgeStatusResponse>('/api/bridge/cctp/status')
-}
-
-export async function submitCctpTransfer(request: CctpTransferRequest): Promise<CctpTransferResponse> {
-  return apiFetch<CctpTransferResponse>('/api/bridge/cctp/transfer', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  })
-}
-
 // ─── Re-exports for convenience ──────────────────────────────────────────────
 
 export type {
@@ -237,9 +214,4 @@ export type {
   MarketSnapshot,
   RunAgentRequest,
   RunAgentResponse,
-  CctpQuoteRequest,
-  CctpQuoteResponse,
-  CctpTransferRequest,
-  CctpTransferResponse,
-  CctpBridgeStatusResponse,
 }

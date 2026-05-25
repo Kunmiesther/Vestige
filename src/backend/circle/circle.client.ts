@@ -3,6 +3,7 @@ import { ARC_TESTNET } from '@/lib/arc'
 
 const DEFAULT_CIRCLE_BASE_URL = 'https://api.circle.com/v1/w3s'
 const USER_ALREADY_INITIALIZED_CODE = 155106
+const ARC_BLOCKCHAIN = 'ARC-TESTNET'
 
 export interface CircleWalletSession {
   userToken: string
@@ -56,7 +57,7 @@ export class CircleApiError extends Error {
 
 function circleConfig() {
   const apiKey = process.env.CIRCLE_API_KEY
-  const baseUrl = normalizeCircleBaseUrl(process.env.NEXT_PUBLIC_CIRCLE_BASE_URL ?? DEFAULT_CIRCLE_BASE_URL)
+  const baseUrl = normalizeCircleBaseUrl(process.env.CIRCLE_BASE_URL ?? process.env.NEXT_PUBLIC_CIRCLE_BASE_URL ?? DEFAULT_CIRCLE_BASE_URL)
   if (!apiKey) throw new Error('Missing CIRCLE_API_KEY.')
   return { apiKey, baseUrl }
 }
@@ -119,7 +120,8 @@ export async function initializeUser(input: {
       body: JSON.stringify({
         idempotencyKey: randomUUID(),
         accountType: input.accountType ?? 'SCA',
-        blockchains: ['ARC-TESTNET'],
+        blockchains: [ARC_BLOCKCHAIN],
+        metadata: [{ name: 'Vestige Arc Testnet Wallet', refId: 'vestige-arc-testnet' }],
       }),
     })
   } catch (error) {
@@ -134,8 +136,30 @@ export async function initializeUser(input: {
   return { challengeId, alreadyInitialized: false }
 }
 
+export async function createUserWallet(input: {
+  userToken: string
+  accountType?: 'EOA' | 'SCA'
+}): Promise<{ challengeId?: string }> {
+  const body = await circleFetch<{ data?: { challengeId?: string } }>('/user/wallets', {
+    method: 'POST',
+    headers: {
+      'X-User-Token': input.userToken,
+    },
+    body: JSON.stringify({
+      idempotencyKey: randomUUID(),
+      accountType: input.accountType ?? 'SCA',
+      blockchains: [ARC_BLOCKCHAIN],
+      metadata: [{ name: 'Vestige Arc Testnet Wallet', refId: 'vestige-arc-testnet' }],
+    }),
+  })
+
+  const challengeId = body.data?.challengeId
+  if (!challengeId) throw new Error('Circle did not return a wallet creation challenge.')
+  return { challengeId }
+}
+
 export async function listWallets(userToken: string): Promise<CircleWallet[]> {
-  const body = await circleFetch<{ data?: { wallets?: Array<{ id?: string; address?: string; blockchain?: string; state?: string }> } }>('/wallets?blockchain=ARC-TESTNET', {
+  const body = await circleFetch<{ data?: { wallets?: Array<{ id?: string; address?: string; blockchain?: string; state?: string }> } }>(`/wallets?blockchain=${ARC_BLOCKCHAIN}`, {
     method: 'GET',
     headers: {
       'X-User-Token': userToken,
@@ -147,7 +171,7 @@ export async function listWallets(userToken: string): Promise<CircleWallet[]> {
     .map((wallet) => ({
       id: wallet.id,
       address: wallet.address,
-      blockchain: wallet.blockchain ?? 'ARC-TESTNET',
+      blockchain: wallet.blockchain ?? ARC_BLOCKCHAIN,
       state: wallet.state,
     }))
 }

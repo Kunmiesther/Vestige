@@ -434,8 +434,6 @@ a { color: inherit; text-decoration: none; }
   .blob-3, .blob-4 { display: none; }
 }
 
-/* ── PASTE THESE AT THE BOTTOM OF globals.css ── */
-
 /* Wallet modal — fix cropped first option + text contrast */
 .wallet-option-primary {
   padding: 18px !important;
@@ -565,4 +563,194 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 768px) {
   .mobile-only { display: block; }
   .desktop-only { display: none !important; }
+}
+
+@media (max-width: 768px) {
+  .nav {
+    height: 52px;
+    padding: 0 12px !important;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .nav-logo {
+    font-size: 15px;
+    letter-spacing: 0.13em;
+    flex: 0 0 auto;
+  }
+
+  .nav-right {
+    margin-left: auto;
+    gap: 0;
+    min-width: 0;
+  }
+
+  .nav-right > div {
+    max-width: 54vw;
+  }
+
+  .nav-right button {
+    max-width: 54vw;
+    min-height: 31px;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    white-space: nowrap;
+  }
+
+  .wallet-trigger {
+    max-width: 54vw;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .wallet-menu {
+    width: min(280px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+  }
+
+  .home-hero {
+    min-height: auto !important;
+    padding: 42px 16px 34px !important;
+    justify-content: flex-start !important;
+  }
+
+  .home-hero > div:first-child {
+    background-position: 58% 42% !important;
+  }
+
+  .home-ticker {
+    gap: 10px 14px !important;
+    margin-bottom: 26px !important;
+  }
+
+  .home-headline {
+    margin-bottom: 22px !important;
+  }
+
+  .display-xl {
+    line-height: 0.98 !important;
+  }
+
+  .display-xl .editorial {
+    font-size: clamp(36px, 10vw, 54px) !important;
+    display: inline !important;
+  }
+
+  .home-hero-actions {
+    grid-template-columns: 1fr !important;
+    gap: 18px !important;
+    margin-bottom: 28px !important;
+  }
+
+  .home-hero-actions > div:last-child {
+    flex-direction: row !important;
+    flex-wrap: wrap;
+  }
+
+  .home-hero-actions .btn-primary,
+  .home-hero-actions .btn-ghost {
+    flex: 1 1 150px;
+    justify-content: center;
+    padding: 11px 14px;
+  }
+
+  .home-stats-strip {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .home-stats-strip > div {
+    padding: 14px 14px !important;
+  }
+
+  .home-trader-section,
+  .home-fields-section,
+  .home-cta-section {
+    padding: 52px 16px !important;
+  }
+
+  .home-trader-section > div:first-child {
+    background-size: cover !important;
+    background-position: 64% center !important;
+  }
+
+  .home-trader-grid {
+    grid-template-columns: 1fr !important;
+    gap: 28px !important;
+  }
+
+  .home-feature-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+
+  .home-section-heading {
+    margin-bottom: 28px !important;
+  }
+
+  .home-field-row {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+    padding: 16px 16px !important;
+  }
+
+  .home-field-row > div:nth-child(2) {
+    padding-right: 0 !important;
+  }
+
+  .home-cta-section {
+    min-height: auto;
+    padding-top: 64px !important;
+    padding-bottom: 72px !important;
+  }
+
+  .home-cta-section > div:first-child {
+    background-position: center center !important;
+  }
+
+  .home-cta-section h2 {
+    font-size: clamp(34px, 11vw, 58px) !important;
+    line-height: 1 !important;
+    margin-bottom: 12px !important;
+  }
+
+  .home-cta-section p {
+    margin-bottom: 24px !important;
+  }
+
+  section h2,
+  main h1 {
+    overflow-wrap: anywhere;
+  }
+
+  .card {
+    border-radius: var(--radius);
+  }
+
+  .btn-primary,
+  .btn-ghost,
+  .btn-trace {
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
+  }
+}
+
+@media (max-width: 430px) {
+  .nav-right > div,
+  .nav-right button {
+    max-width: 48vw;
+  }
+
+  .nav-right button {
+    font-size: 9px !important;
+  }
+
+  .home-stats-strip,
+  div[style*="repeat(4,1fr)"],
+  div[style*="repeat(4, 1fr)"],
+  div[style*="repeat(3,1fr)"],
+  div[style*="repeat(3, 1fr)"],
+  .locked-preview-grid {
+    grid-template-columns: 1fr !important;
+  }
 }

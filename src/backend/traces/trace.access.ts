@@ -38,16 +38,21 @@ export function hasReceiptForPayment(
 export function buildLockedTracePreview(trace: ReasoningTrace) {
   const accessTier: Exclude<ReasoningTrace["accessTier"], "public" | undefined> =
     trace.accessTier === "institutional" ? "institutional" : "premium";
+  const paymentReceipts = confirmedReceipts(trace.paymentReceipts ?? []);
+  const publicationReceipts = trace.publicationReceipts ?? [];
   return {
     id: trace.id,
     market: trace.market,
     assetSymbol: trace.assetSymbol,
     accessTier,
     unlockPriceUsdc: traceUnlockPrice(trace),
-    unlockCount: traceUnlockCount(trace),
-    totalUsdcGenerated: traceTotalUsdcGenerated(trace),
+    unlockCount: paymentReceipts.length,
+    totalUsdcGenerated: sumUsdc(paymentReceipts),
     creatorWalletAddress: trace.creatorWalletAddress,
     demandScore: trace.demandScore ?? traceUnlockCount(trace),
+    publicationCount: publicationReceipts.length,
+    lastPaymentReceipt: latestPaymentReceipt(paymentReceipts),
+    lastPublicationReceipt: latestPublicationReceipt(publicationReceipts),
     createdAt: trace.createdAt,
   };
 }
@@ -60,7 +65,7 @@ export function maskTraceForLockedAccess(trace: ReasoningTrace): ReasoningTrace 
     reasoningSteps: [],
     risks: [],
     catalysts: [],
-    verdict: undefined,
+    verdict: trace.verdict,
     rawModelOutput: undefined,
     positionIntent: {
       side: "neutral",
@@ -113,6 +118,21 @@ function confirmedReceipts(receipts: TracePaymentReceipt[]): TracePaymentReceipt
     receipt.settlementStatus === "confirmed" &&
     /^0x[0-9a-fA-F]{64}$/.test(receipt.txHash ?? receipt.receiptId),
   );
+}
+
+function sumUsdc(receipts: TracePaymentReceipt[]): string {
+  const total = receipts.reduce((sum, receipt) => sum + (Number.parseFloat(receipt.amount) || 0), 0);
+  return total.toFixed(2);
+}
+
+function latestPaymentReceipt(receipts: TracePaymentReceipt[]): TracePaymentReceipt | undefined {
+  return receipts.slice().sort((a, b) => new Date(b.unlockedAt).getTime() - new Date(a.unlockedAt).getTime())[0];
+}
+
+function latestPublicationReceipt(
+  receipts: NonNullable<ReasoningTrace["publicationReceipts"]>,
+): NonNullable<ReasoningTrace["publicationReceipts"]>[number] | undefined {
+  return receipts.slice().sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0];
 }
 
 function normalizeAddress(value: string | null | undefined): string | undefined {

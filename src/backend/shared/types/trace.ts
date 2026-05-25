@@ -33,6 +33,10 @@ export interface TracePublicationReceipt {
   publicationId: string;
   network: string;
   publisher: string;
+  amount?: string;
+  asset?: "USDC";
+  payTo?: string;
+  settlementStatus?: "submitted" | "confirmed" | "failed";
   message: string;
   signature: string;
   contentDigest: string;

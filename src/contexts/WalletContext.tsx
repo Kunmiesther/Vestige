@@ -104,7 +104,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           if (cancelled) return
 
           if (completed) {
-            console.info('[vestige:wallet]', { step: 'circle-redirect-complete', address: completed.address })
             const activeInjectedAddress = await getAddress('browser').catch(() => null)
             const activeInjectedChainId = activeInjectedAddress ? await getChainId('browser').catch(() => null) : null
             const balance = await fetchWalletBalance(activeInjectedAddress ?? completed.address).catch(() => '0.00')
@@ -134,7 +133,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           }
         } catch (err) {
           if (!cancelled) {
-            console.error('[vestige:wallet]', { step: 'circle-redirect-failed', error: err instanceof Error ? err.message : err })
             patch({
               isConnecting: false,
               error: err instanceof Error ? err.message : 'Failed to complete Circle login',
@@ -150,7 +148,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       if (saved.walletType === 'circle') {
         const restored = await getPersistedCircleWallet().catch((err) => {
-          console.error('[vestige:wallet]', { step: 'circle-session-restore-failed', error: err instanceof Error ? err.message : err })
           return null
         })
         if (cancelled) return
