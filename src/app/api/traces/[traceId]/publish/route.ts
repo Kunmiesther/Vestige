@@ -90,29 +90,11 @@ export async function POST(
       publishedAt,
     };
 
-    const publicationReceipts = uniquePublicationReceipts([
-      ...(trace.publicationReceipts ?? []),
-      receipt,
-    ]);
-    const updatedTrace: ReasoningTrace = {
-      ...trace,
-      publicationReceipts,
-    };
-
-    let persistedTrace = updatedTrace;
-    try {
-      persistedTrace = await repo.updateTrace(updatedTrace);
-    } catch (error) {
-      console.warn("[vestige:publish:persist-warning]", {
-        traceId,
-        message: error instanceof Error ? error.message : "unknown",
-      });
-    }
+    const persistedTrace = await repo.recordPublication(traceId, receipt);
 
     return NextResponse.json({
       trace: {
         ...persistedTrace,
-        publicationReceipts,
         locked: false,
       },
       receipt,
@@ -208,15 +190,5 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Trace publication storage timed out.")), ms);
     promise.then(resolve, reject).finally(() => clearTimeout(timeout));
-  });
-}
-
-function uniquePublicationReceipts(receipts: TracePublicationReceipt[]): TracePublicationReceipt[] {
-  const seen = new Set<string>();
-  return receipts.filter((receipt) => {
-    const key = receipt.txHash || receipt.publicationId || receipt.contentDigest || receipt.publishedAt;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
   });
 }

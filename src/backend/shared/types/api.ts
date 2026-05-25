@@ -42,6 +42,7 @@ export interface ListTracesQuery {
   assetSymbol?: string;
   limit?: number;
   cursor?: string;
+  walletAddress?: string;
 }
 
 export interface ListTracesResponse {

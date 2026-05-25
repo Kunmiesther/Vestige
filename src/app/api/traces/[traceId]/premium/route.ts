@@ -6,7 +6,6 @@ import {
   buildLockedTracePreview,
   hasReceiptForPayment,
   maskTraceForLockedAccess,
-  traceUnlockCount,
 } from "@/backend/traces/trace.access";
 import { createTraceRepository } from "@/backend/traces/trace.repository";
 
@@ -54,22 +53,7 @@ export async function GET(
     }
 
     if (access.receipt) {
-      const paymentReceipts = uniquePaymentReceipts([
-        ...(trace.paymentReceipts ?? []),
-        access.receipt,
-      ]);
-      const existingCount = traceUnlockCount(trace);
-      const newCount = paymentReceipts.length;
-      const demandIncrement = Math.max(0, newCount - existingCount);
-      const persistedTrace = {
-        ...trace,
-        locked: true,
-        paymentReceipts,
-        unlockCount: newCount,
-        demandScore: Math.max(trace.demandScore ?? existingCount, existingCount) + demandIncrement,
-      };
-
-      await repo.updateTrace(persistedTrace);
+      const persistedTrace = await repo.recordUnlock(traceId, access.receipt);
 
       return NextResponse.json(
         { trace: { ...persistedTrace, locked: false }, receipt: access.receipt },
@@ -106,14 +90,4 @@ export async function GET(
       { status },
     );
   }
-}
-
-function uniquePaymentReceipts(receipts: NonNullable<PremiumTraceResponse["trace"]["paymentReceipts"]>) {
-  const seen = new Set<string>();
-  return receipts.filter((receipt) => {
-    const key = receipt.txHash ?? receipt.receiptId;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }

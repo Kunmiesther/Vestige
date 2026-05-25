@@ -104,12 +104,14 @@ export async function listTraces(params?: {
   assetSymbol?: string
   limit?: number
   cursor?: string
+  walletAddress?: string
 }): Promise<{ traces: ReasoningTrace[]; nextCursor?: string }> {
   const qs = new URLSearchParams()
   if (params?.agentId) qs.set('agentId', params.agentId)
   if (params?.assetSymbol) qs.set('assetSymbol', params.assetSymbol)
   if (params?.limit) qs.set('limit', String(params.limit))
   if (params?.cursor) qs.set('cursor', params.cursor)
+  if (params?.walletAddress) qs.set('walletAddress', params.walletAddress)
 
   const query = qs.toString() ? `?${qs.toString()}` : ''
   const data = await apiFetch<ListTracesResponse>(`/api/traces${query}`)

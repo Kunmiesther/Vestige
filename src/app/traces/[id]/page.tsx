@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { getPremiumTrace, publishTrace, ApiError } from '@/lib/api'
 import { getAddress, sendArcUsdcTransfer, sendX402PaymentTransaction, signMessage } from '@/lib/wallet'
-import { clearTraceAccess, loadTraceAccess, saveTraceAccess } from '@/lib/trace-access'
 import { useWallet } from '@/contexts/WalletContext'
 import {
   formatDate,
@@ -59,7 +58,7 @@ function StatusBadge({ status }: { status: TraceStatus }) {
 function LocalAuditBadge() {
   return (
     <span className="audit-badge">
-      Local audit trail
+      Persistent audit trail
     </span>
   )
 }
@@ -168,9 +167,7 @@ export default function TraceDetailPage() {
     if (unlockInFlightRef.current) return
     let cancelled = false
     const accessWalletAddress = wallet.activeAddress ?? wallet.address ?? undefined
-    const storedAccess = loadTraceAccess(traceId)
-    const storedAccessWallet = storedAccess?.payer ?? accessWalletAddress
-    const accessLoadKey = `${traceId}:${storedAccess?.receiptId ?? ''}:${storedAccessWallet ?? ''}`
+    const accessLoadKey = `${traceId}:${accessWalletAddress ?? ''}`
     if (accessLoadKeyRef.current === accessLoadKey) return
     accessLoadKeyRef.current = accessLoadKey
     const requestId = loadRequestRef.current + 1
@@ -181,11 +178,10 @@ export default function TraceDetailPage() {
       setActionError(null)
       setUnlockState('idle')
     }
-    getPremiumTrace(traceId, storedAccess?.receiptId, storedAccessWallet)
+    getPremiumTrace(traceId, undefined, accessWalletAddress)
       .then(result => {
         if (cancelled || requestId !== loadRequestRef.current || unlockInFlightRef.current) return
         if (result.status === 'payment_required') {
-          if (storedAccess?.receiptId) clearTraceAccess(traceId)
           setPaymentRequired(result.paymentRequired)
           setTracePreview(result.tracePreview ?? null)
           setPaymentReceipt(undefined)
@@ -196,7 +192,6 @@ export default function TraceDetailPage() {
         setTrace(result.trace)
         setPaymentReceipt(result.receipt)
         setPublicationReceipt(result.trace.publicationReceipts?.[0])
-        if (result.receipt) saveTraceAccess(traceId, result.receipt)
         setPaymentRequired(null)
         setTracePreview(null)
       })
@@ -269,7 +264,6 @@ export default function TraceDetailPage() {
         setTrace({ ...challengeResult.trace, locked: false })
         setPaymentReceipt(challengeResult.receipt)
         setPublicationReceipt(challengeResult.trace.publicationReceipts?.[0])
-        if (challengeResult.receipt) saveTraceAccess(traceId, challengeResult.receipt)
         setPaymentRequired(null)
         setTracePreview(null)
         setUnlockState('trace_unlocked')
@@ -332,7 +326,6 @@ export default function TraceDetailPage() {
 
       const unlockedTrace = result.trace
       const unlockedReceipt = { ...result.receipt, txHash: paymentTxHash }
-      saveTraceAccess(traceId, unlockedReceipt)
 
       setTrace({ ...unlockedTrace, locked: false })
       setPaymentReceipt(unlockedReceipt)

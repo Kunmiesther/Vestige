@@ -20,17 +20,20 @@ export function hasReceiptForPayment(
   walletAddress?: string | null,
 ): TracePaymentReceipt | undefined {
   const normalized = normalizePaymentHeader(paymentHeader);
-  if (!normalized) return undefined;
   const normalizedWallet = normalizeAddress(walletAddress);
+  if (!normalized && !normalizedWallet) return undefined;
 
   return confirmedReceipts(trace.paymentReceipts ?? []).find((receipt) => {
+    const receiptPayer = normalizeAddress(receipt.payer);
+    if (!normalized && normalizedWallet) {
+      return receiptPayer === normalizedWallet;
+    }
+
     const receiptMatches = normalizeReceiptIdentifier(receipt) === normalized ||
       receipt.receiptId === normalized ||
-      receipt.txHash === normalized ||
       receipt.txHash === normalized;
     if (!receiptMatches) return false;
 
-    const receiptPayer = normalizeAddress(receipt.payer);
     return !normalizedWallet || !receiptPayer || receiptPayer === normalizedWallet;
   });
 }

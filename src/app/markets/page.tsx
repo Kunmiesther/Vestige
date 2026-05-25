@@ -56,12 +56,13 @@ export default function MarketsPage() {
   const [watchRetryNonce, setWatchRetryNonce] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<'newest' | 'positioning'>('newest')
+  const activeWallet = wallet.activeAddress ?? wallet.address ?? undefined
 
   const fetch = useCallback(async () => {
     setLoading(true); setError(null)
     try {
       const [{ traces: d }, synced] = await Promise.all([
-        listTraces({ limit: 100 }),
+        listTraces({ limit: 100, walletAddress: activeWallet }),
         syncPositions().catch(() => null),
       ])
       setTraces(d)
@@ -71,7 +72,7 @@ export default function MarketsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeWallet])
 
   useEffect(() => { fetch() }, [fetch])
 

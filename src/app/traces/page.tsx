@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { listTraces, ApiError } from '@/lib/api'
-import { loadTraceAccess } from '@/lib/trace-access'
 import { useWallet } from '@/contexts/WalletContext'
 import {
   formatRelative,
@@ -17,7 +16,7 @@ import {
 } from '@/lib/trace-utils'
 import type { ReasoningTrace, TraceStatus } from '@/backend/shared/types/trace'
 
-type MarketplaceView = 'latest' | 'premium' | 'most_unlocked' | 'recently_published'
+type MarketplaceView = 'latest' | 'premium' | 'unlocked' | 'most_unlocked' | 'recently_published'
 
 function StateBadge({ trace }: { trace: ReasoningTrace }) {
   const label = trace.verdict?.action ?? convictionState(trace)
@@ -76,30 +75,25 @@ export default function TracesPage() {
     setLoading(true)
     setError(null)
     try {
-      const { traces: data } = await listTraces({ limit: 100 })
+      const { traces: data } = await listTraces({ limit: 100, walletAddress: activeWallet })
       setTraces(data)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Failed to load traces.')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeWallet])
 
   useEffect(() => { fetch() }, [fetch])
 
   const unlockedTraceIds = useMemo(() => {
-    if (typeof window === 'undefined') return new Set<string>()
-    return new Set(traces.filter(trace => {
-      const access = loadTraceAccess(trace.id)
-      if (!access) return false
-      if (!activeWallet) return true
-      return !access.payer || access.payer.toLowerCase() === activeWallet.toLowerCase()
-    }).map(trace => trace.id))
+    return new Set(traces.filter(trace => walletHasConfirmedUnlock(trace, activeWallet)).map(trace => trace.id))
   }, [traces, activeWallet])
 
   const filtered = traces
     .filter(trace => {
       if (view === 'premium' && traceAccessLabel(trace) === 'PUBLIC') return false
+      if (view === 'unlocked' && !unlockedTraceIds.has(trace.id)) return false
       if (view === 'recently_published' && !trace.publicationReceipts?.length) return false
       const q = search.trim().toLowerCase()
       return !q || trace.market.toLowerCase().includes(q) || trace.assetSymbol.toLowerCase().includes(q)
@@ -143,6 +137,7 @@ export default function TracesPage() {
           {([
             ['latest', 'Latest traces'],
             ['premium', 'Premium traces'],
+            ['unlocked', 'Unlocked'],
             ['most_unlocked', 'Most unlocked'],
             ['recently_published', 'Recently published'],
           ] as const).map(([key, label]) => (
@@ -266,4 +261,15 @@ export default function TracesPage() {
 
 function latestPublicationTime(trace: ReasoningTrace): number {
   return Math.max(0, ...(trace.publicationReceipts ?? []).map(receipt => new Date(receipt.publishedAt).getTime()))
+}
+
+function walletHasConfirmedUnlock(trace: ReasoningTrace, walletAddress?: string): boolean {
+  if (!walletAddress) return false
+  if (!trace.locked) return true
+
+  const normalizedWallet = walletAddress.toLowerCase()
+  return (trace.paymentReceipts ?? []).some(receipt =>
+    receipt.settlementStatus === 'confirmed' &&
+    receipt.payer?.toLowerCase() === normalizedWallet,
+  )
 }

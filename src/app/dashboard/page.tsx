@@ -463,6 +463,7 @@ type Filter = 'all' | 'long' | 'short' | 'neutral'
 
 export default function DashboardPage() {
   const router = useRouter()
+  const wallet = useWallet()
   const [agents, setAgents]             = useState<Agent[]>([])
   const [traces, setTraces]             = useState<ReasoningTrace[]>([])
   const [newTraceIds, setNewTraceIds]   = useState<Set<string>>(new Set())
@@ -475,6 +476,7 @@ export default function DashboardPage() {
   const [filter, setFilter]             = useState<Filter>('all')
   const refreshRef                      = useRef<ReturnType<typeof setInterval> | null>(null)
   const traceRefreshAttemptsRef        = useRef(0)
+  const activeWallet = wallet.activeAddress ?? wallet.address ?? undefined
 
   const fetchAgents = useCallback(async () => {
     setLoadingAgents(true); setAgentsError(null)
@@ -487,7 +489,7 @@ export default function DashboardPage() {
     if (!silent) setLoadingTraces(true)
     setTracesError(null)
     try {
-      const { traces: data } = await listTraces({ limit: 50 })
+      const { traces: data } = await listTraces({ limit: 50, walletAddress: activeWallet })
       setTraces(data)
       traceRefreshAttemptsRef.current = 0
     } catch (e) {
@@ -496,7 +498,7 @@ export default function DashboardPage() {
     } finally {
       if (!silent) setLoadingTraces(false)
     }
-  }, [])
+  }, [activeWallet])
 
   useEffect(() => {
     fetchAgents()

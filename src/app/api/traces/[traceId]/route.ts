@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server'
 import { createTraceRepository } from '@/backend/traces/trace.repository'
 import type { GetTraceResponse, ApiErrorResponse } from '@/backend/shared/types/api'
-import { maskTraceForLockedAccess } from '@/backend/traces/trace.access'
+import { hasReceiptForPayment, maskTraceForLockedAccess } from '@/backend/traces/trace.access'
 
 interface RouteContext {
   params: Promise<{ traceId: string }>
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: RouteContext
 ): Promise<NextResponse<GetTraceResponse | ApiErrorResponse>> {
   try {
@@ -23,7 +23,14 @@ export async function GET(
       )
     }
 
-    return NextResponse.json({ trace: maskTraceForLockedAccess(trace) })
+    const { searchParams } = new URL(request.url)
+    const walletAddress = searchParams.get('walletAddress') ?? request.headers.get('x-vestige-wallet-address')
+    const receipt = hasReceiptForPayment(trace, null, walletAddress)
+
+    return NextResponse.json({
+      trace: receipt ? { ...trace, locked: false } : maskTraceForLockedAccess(trace),
+      receipt,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to get trace'
     return NextResponse.json(
