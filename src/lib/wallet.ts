@@ -103,6 +103,7 @@ export interface WalletState {
   chainId: number | null
   isConnected: boolean
   isConnecting: boolean
+  isSwitchingNetwork: boolean
   isOnArc: boolean
   balance: string | null  // USDC balance as formatted string
   error: string | null
@@ -1238,28 +1239,229 @@ export async function switchToArcNetwork(connectorId?: SelfCustodyConnectorId | 
 }
 
 export async function switchToEthereumChain(params: ChainRequestParameters, connectorId?: SelfCustodyConnectorId | null): Promise<void> {
+  requestInjectedProviderDiscovery()
   const provider = getProviderWithFallback(connectorId)
   if (!provider) throw new Error('No injected EVM wallet found.')
+  const expectedChainId = parseWalletChainId(params.chainId)
 
   try {
+    const activeChainId = await getProviderChainId(provider).catch(() => null)
+    if (activeChainId === expectedChainId) return
+
     await provider.request({
       method: 'wallet_switchEthereumChain',
       params: [{ chainId: params.chainId }],
     })
   } catch (err: unknown) {
-    if ((err as { code?: number })?.code === 4902) {
-      await provider.request({
-        method: 'wallet_addEthereumChain',
-        params: [params],
-      })
+    if (!isMissingChainError(err)) {
+      throw friendlyNetworkSwitchError(err, connectorId)
+    }
+
+    await addEthereumChain(provider, params, connectorId)
+
+    const chainIdAfterAdd = await waitForProviderChain(provider, expectedChainId, 1200).catch(() => null)
+    if (chainIdAfterAdd === expectedChainId) return
+
+    try {
       await provider.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: params.chainId }],
       })
-    } else {
-      throw err
+    } catch (retryErr: unknown) {
+      throw friendlyNetworkSwitchError(retryErr, connectorId)
     }
   }
+
+  const switchedChainId = await waitForProviderChain(provider, expectedChainId).catch(() => null)
+  if (switchedChainId !== expectedChainId) {
+    throw new Error('Arc Testnet was added, but the wallet did not switch networks. Approve the Arc network switch in your wallet and try again.')
+  }
+}
+
+async function addEthereumChain(
+  provider: Eip1193Provider,
+  params: ChainRequestParameters,
+  connectorId?: SelfCustodyConnectorId | null,
+): Promise<void> {
+  try {
+    await provider.request({
+      method: 'wallet_addEthereumChain',
+      params: [params],
+    })
+  } catch (err: unknown) {
+    throw friendlyNetworkAddError(err, connectorId)
+  }
+}
+
+async function waitForProviderChain(
+  provider: Eip1193Provider,
+  expectedChainId: number,
+  timeoutMs = 3500,
+  pollIntervalMs = 250,
+): Promise<number | null> {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const chainId = await getProviderChainId(provider).catch(() => null)
+    if (chainId === expectedChainId) return chainId
+    await delay(pollIntervalMs)
+  }
+
+  return null
+}
+
+async function getProviderChainId(provider: Eip1193Provider): Promise<number> {
+  const chainId = await provider.request({ method: 'eth_chainId' })
+  return parseWalletChainId(chainId)
+}
+
+function parseWalletChainId(value: unknown): number {
+  if (typeof value === 'number') return value
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value !== 'string') return 0
+
+  const trimmed = value.trim()
+  if (!trimmed) return 0
+  return trimmed.toLowerCase().startsWith('0x')
+    ? Number.parseInt(trimmed, 16)
+    : Number.parseInt(trimmed, 10)
+}
+
+function isMissingChainError(error: unknown): boolean {
+  const codes = walletErrorCodes(error).map(code => String(code).toLowerCase())
+  if (codes.includes('4902')) return true
+
+  const message = walletErrorMessage(error)
+  return message.includes('unrecognized chain') ||
+    message.includes('unknown chain') ||
+    message.includes('chain has not been added') ||
+    message.includes('chain hasn\'t been added') ||
+    message.includes('chain is not added') ||
+    message.includes('chain not added') ||
+    message.includes('not added') && message.includes('chain') ||
+    message.includes('wallet_addethereumchain')
+}
+
+function friendlyNetworkSwitchError(error: unknown, connectorId?: SelfCustodyConnectorId | null): Error {
+  if (isUserRejectedWalletError(error)) {
+    return new Error('Arc network switch was cancelled in your wallet.')
+  }
+  if (isPendingWalletRequestError(error)) {
+    return new Error('A wallet request is already open. Finish that request to switch to Arc Testnet.')
+  }
+  if (isUnsupportedWalletMethodError(error)) {
+    return new Error(`${connectorLabel(connectorId)} does not support automatic network switching. Try MetaMask, Rabby, Coinbase Wallet, or another injected EVM wallet.`)
+  }
+
+  return new Error('Could not switch to Arc Testnet. Approve the network switch in your wallet and try again.')
+}
+
+function friendlyNetworkAddError(error: unknown, connectorId?: SelfCustodyConnectorId | null): Error {
+  if (isUserRejectedWalletError(error)) {
+    return new Error('Arc network addition was cancelled in your wallet.')
+  }
+  if (isPendingWalletRequestError(error)) {
+    return new Error('A wallet request is already open. Finish that request to add Arc Testnet.')
+  }
+  if (isUnsupportedWalletMethodError(error)) {
+    return new Error(`${connectorLabel(connectorId)} does not support automatic Arc network addition. Try MetaMask, Rabby, Coinbase Wallet, or another injected EVM wallet.`)
+  }
+  if (isInvalidWalletRequestError(error)) {
+    return new Error('Wallet rejected the Arc Testnet network details. Check the configured Arc RPC URL and try again.')
+  }
+
+  return new Error('Could not add Arc Testnet to your wallet. Approve the Arc network request in your wallet and try again.')
+}
+
+function isUserRejectedWalletError(error: unknown): boolean {
+  const codes = walletErrorCodes(error).map(code => String(code).toLowerCase())
+  if (codes.includes('4001') || codes.includes('action_rejected')) return true
+
+  const message = walletErrorMessage(error)
+  return message.includes('user rejected') ||
+    message.includes('user denied') ||
+    message.includes('rejected by user') ||
+    message.includes('request rejected') ||
+    message.includes('cancelled') ||
+    message.includes('canceled')
+}
+
+function isPendingWalletRequestError(error: unknown): boolean {
+  const codes = walletErrorCodes(error).map(code => String(code).toLowerCase())
+  if (codes.includes('-32002')) return true
+
+  const message = walletErrorMessage(error)
+  return message.includes('already pending') ||
+    message.includes('request already pending') ||
+    message.includes('already processing') ||
+    message.includes('request of type') && message.includes('pending')
+}
+
+function isUnsupportedWalletMethodError(error: unknown): boolean {
+  const codes = walletErrorCodes(error).map(code => String(code).toLowerCase())
+  if (codes.includes('4200') || codes.includes('-32601')) return true
+
+  const message = walletErrorMessage(error)
+  return message.includes('method not found') ||
+    message.includes('method does not exist') ||
+    message.includes('does not support') ||
+    message.includes('unsupported method') ||
+    message.includes('not supported')
+}
+
+function isInvalidWalletRequestError(error: unknown): boolean {
+  const codes = walletErrorCodes(error).map(code => String(code).toLowerCase())
+  if (codes.includes('-32602')) return true
+
+  const message = walletErrorMessage(error)
+  return message.includes('invalid params') ||
+    message.includes('invalid parameters') ||
+    message.includes('invalid chain') ||
+    message.includes('invalid rpc')
+}
+
+function walletErrorCodes(error: unknown): Array<string | number> {
+  const codes: Array<string | number> = []
+  const seen = new Set<unknown>()
+
+  const visit = (value: unknown) => {
+    if (!isRecord(value) || seen.has(value)) return
+    seen.add(value)
+
+    const code = value.code
+    if (typeof code === 'number' || typeof code === 'string') codes.push(code)
+
+    visit(value.data)
+    visit(value.error)
+    visit(value.cause)
+    visit(value.originalError)
+  }
+
+  visit(error)
+  return codes
+}
+
+function walletErrorMessage(error: unknown): string {
+  const messages: string[] = []
+  const seen = new Set<unknown>()
+
+  const visit = (value: unknown) => {
+    if (typeof value === 'string') {
+      messages.push(value)
+      return
+    }
+    if (!isRecord(value) || seen.has(value)) return
+    seen.add(value)
+
+    if (typeof value.message === 'string') messages.push(value.message)
+    visit(value.data)
+    visit(value.error)
+    visit(value.cause)
+    visit(value.originalError)
+  }
+
+  visit(error)
+  return messages.join(' ').toLowerCase()
 }
 
 export function onAccountsChanged(callback: (accounts: string[]) => void, connectorId?: SelfCustodyConnectorId | null): () => void {

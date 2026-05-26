@@ -57,6 +57,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     chainId: null,
     isConnected: false,
     isConnecting: false,
+    isSwitchingNetwork: false,
     isOnArc: false,
     balance: null,
     error: null,
@@ -233,6 +234,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                 activeProvider: null,
                 activeChainId: null,
                 chainId: null,
+                isSwitchingNetwork: false,
                 isOnArc: false,
                 balance: null,
               })
@@ -345,6 +347,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             activeProvider: null,
             activeChainId: null,
             chainId: null,
+            isSwitchingNetwork: false,
             isOnArc: false,
             balance: null,
           })
@@ -372,11 +375,27 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const switchToArc = useCallback(async () => {
+    const s = await getStateSnapshot()
+    const connectorId = s.activeWalletType === 'injected'
+      ? s.activeConnectorId ?? s.connectorId ?? injectedConnectorRef.current ?? 'browser'
+      : injectedConnectorRef.current ?? s.connectorId ?? 'browser'
+
+    patch({ isSwitchingNetwork: true, error: null })
     try {
-      await switchToArcNetwork(injectedConnectorRef.current ?? undefined)
-      patch({ chainId: ARC_TESTNET.chainId, activeChainId: ARC_TESTNET.chainId, isOnArc: true, error: null })
+      await switchToArcNetwork(connectorId)
+      const chainId = await getChainId(connectorId).catch(() => ARC_TESTNET.chainId)
+      patch({
+        chainId,
+        activeChainId: chainId,
+        isOnArc: chainId === ARC_TESTNET.chainId,
+        isSwitchingNetwork: false,
+        error: null,
+      })
     } catch (err) {
-      patch({ error: err instanceof Error ? err.message : 'Failed to switch network' })
+      patch({
+        isSwitchingNetwork: false,
+        error: err instanceof Error ? err.message : 'Could not switch to Arc Testnet. Try again.',
+      })
     }
   }, [])
 
@@ -398,6 +417,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       chainId: null,
       isConnected: false,
       isConnecting: false,
+      isSwitchingNetwork: false,
       isOnArc: false,
       balance: null,
       error: null,

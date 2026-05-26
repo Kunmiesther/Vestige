@@ -6,7 +6,7 @@ import { WalletModal } from './WalletModal'
 import { ARC_TESTNET, truncateAddress } from '@/lib/arc'
 
 export function WalletButton() {
-  const { address, activeAddress, activeWalletType, isConnected, isConnecting, isOnArc, walletType, balance, switchToArc, disconnect, refreshBalance } = useWallet()
+  const { address, activeAddress, activeWalletType, isConnected, isConnecting, isSwitchingNetwork, isOnArc, walletType, balance, error, switchToArc, disconnect, refreshBalance } = useWallet()
   const [showModal, setShowModal] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -67,20 +67,64 @@ export function WalletButton() {
   // Wrong network warning
   if (!isOnArc && activeWalletType === 'injected') {
     return (
-      <button
+      <div style={{ position: 'relative' }}>
+        <button
         className="wallet-trigger"
-        onClick={switchToArc}
+        onClick={() => { void switchToArc() }}
+        disabled={isSwitchingNetwork}
         style={{
           fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: 'var(--ember)',
           background: 'var(--ember-dim)', border: '1px solid rgba(255,107,53,0.25)',
-          padding: '5px 14px', borderRadius: 20, cursor: 'pointer',
-          animation: 'pulse 2s ease-in-out infinite',
+          padding: '5px 14px', borderRadius: 20,
+          cursor: isSwitchingNetwork ? 'wait' : 'pointer',
+          animation: isSwitchingNetwork ? undefined : 'pulse 2s ease-in-out infinite',
+          opacity: isSwitchingNetwork ? 0.75 : 1,
         }}
-      >
+        >
+          {isSwitchingNetwork ? (
+            <>
+              <span style={{
+                animation: 'spin 1s linear infinite',
+                border: '1px solid currentColor',
+                borderRightColor: 'transparent',
+                borderRadius: '50%',
+                display: 'inline-block',
+                height: 9,
+                marginRight: 6,
+                verticalAlign: -1,
+                width: 9,
+              }} />
+              Switching...
+            </>
+          ) : (
+            <>
         ⚠ Switch to Arc
-        <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}`}</style>
-      </button>
+            </>
+          )}
+          <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+        </button>
+        {error && !isSwitchingNetwork && (
+          <div style={{
+            position: 'absolute',
+            top: 'calc(100% + 8px)',
+            right: 0,
+            zIndex: 99,
+            width: 240,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            lineHeight: 1.5,
+            color: 'var(--ember)',
+            background: 'var(--bg-card)',
+            border: '1px solid rgba(255,107,53,0.25)',
+            borderRadius: 'var(--radius)',
+            padding: '9px 10px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          }}>
+            {error}
+          </div>
+        )}
+      </div>
     )
   }
 
